@@ -69,6 +69,14 @@ bool CGUIDialogSimpleMenu::ShowPlaySelection(CFileItem& item)
 
   if (item.IsDiscImage())
   {
+    // For HTTP/HTTPS disc images backed by CDN signed URLs, skip the simple menu.
+    // The menu triggers a bluray:// directory enumeration that opens a separate
+    // HTTP connection to the same URL. CDN rate limiting causes the second
+    // connection (VideoPlayer InputStream) to fail with 403.
+    if (URIUtils::IsProtocol(item.GetDynPath(), "http") ||
+        URIUtils::IsProtocol(item.GetDynPath(), "https"))
+      return true;
+
     CURL url2("udf://");
     url2.SetHostName(item.GetDynPath());
     url2.SetFileName("BDMV/index.bdmv");

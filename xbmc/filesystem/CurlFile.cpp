@@ -7,6 +7,8 @@
  */
 
 #include "CurlFile.h"
+#include "CurlFileEngine.h"
+#include "CurlFileLRUCache.h"
 
 #include "File.h"
 #include "ServiceBroker.h"
@@ -35,6 +37,7 @@
 #include "ShoutcastFile.h"
 #include "utils/CharsetConverter.h"
 #include "utils/log.h"
+#include "utils/URIUtils.h"
 #include "utils/StringUtils.h"
 
 using namespace XFILE;
@@ -451,6 +454,16 @@ void CCurlFile::SetBufferSize(unsigned int size)
 
 void CCurlFile::Close()
 {
+  // ★ ISO deferred close: keep worker alive 200ms for rapid reopen
+  if (m_useIsoEngine && m_isoEngine)
+  {
+    if (m_isoEngine->IsIsoFile() && m_isoEngine->IsRangeSupported())
+      CacheEngineForReuse(m_isoEngine->GetFileUrl(), std::move(m_isoEngine));
+    else
+      { m_isoEngine->Close(); m_isoEngine.reset(); }
+    m_useIsoEngine = false;
+  }
+
   if (m_opened && m_forWrite && !m_inError)
       Write(nullptr, 0);
 
@@ -1076,6 +1089,41 @@ void CCurlFile::SetProxy(const std::string &type, const std::string &host,
 
 bool CCurlFile::Open(const CURL& url)
 {
+  // --- ISO engine path (HTTP/HTTPS/DAV .iso files) ---
+  if (IsIsoUrl(url))
+  {
+    // ★ Cache old engine before replacing (prevents Worker kill on rapid reopen)
+    if (m_useIsoEngine && m_isoEngine && m_isoEngine->IsIsoFile() && m_isoEngine->IsRangeSupported())
+      CacheEngineForReuse(m_isoEngine->GetFileUrl(), std::move(m_isoEngine));
+    else if (m_useIsoEngine && m_isoEngine)
+      { m_isoEngine->Close(); m_isoEngine.reset(); }
+
+    m_useIsoEngine = true;
+    m_isoEngine = TryReuseEngine(url.Get());
+
+    if (!m_isoEngine)
+    {
+      m_isoEngine = std::make_unique<CCurlFileEngine>();
+      // Engine always uses its own 64MB ring buffer;
+      // do NOT pass Kodi's small m_bufferSize (32KB) to it.
+    }
+
+    bool ok = m_isoEngine->Open(url);
+    if (ok)
+    {
+      m_opened = true;
+      m_seekable = m_isoEngine->IsRangeSupported();
+      m_url = url.Get();
+      return true;
+    }
+
+    CLog::Log(LOGERROR, "CCurlFile::{} - ISO engine failed for <{}>", __FUNCTION__,
+              url.GetRedacted());
+    m_isoEngine.reset();
+    m_useIsoEngine = false;
+    // Fall through to legacy path
+  }
+
   m_opened = true;
   m_seekable = true;
 
@@ -1143,6 +1191,15 @@ bool CCurlFile::Open(const CURL& url)
     {
       CLog::Log(LOGWARNING,
                 "CCurlFile::{} - <{}> Disabling multi session due to broken libupnp server",
+                __FUNCTION__, redactPath);
+      m_multisession = false;
+    }
+    // Discard multisession for disc image HTTP(S) sources (ISO, IMG, NRG, UDF).
+    // CDN signed URLs for disc images don't handle concurrent Range requests;
+    // a single sequential connection avoids 403 rate-limit errors.
+    if (m_multisession && URIUtils::IsDiscImage(url2.GetFileName()))
+    {
+      CLog::Log(LOGDEBUG, "CCurlFile::{} - <{}> Disabling multi session for disc image source",
                 __FUNCTION__, redactPath);
       m_multisession = false;
     }
@@ -1393,6 +1450,9 @@ bool CCurlFile::Exists(const CURL& url)
 
 int64_t CCurlFile::Seek(int64_t iFilePosition, int iWhence)
 {
+  if (m_useIsoEngine && m_isoEngine)
+    return m_isoEngine->Seek(iFilePosition, iWhence);
+
   int64_t nextPos = m_state->m_filePos;
 
   if(!m_seekable)
@@ -1491,18 +1551,32 @@ int64_t CCurlFile::Seek(int64_t iFilePosition, int iWhence)
 
 int64_t CCurlFile::GetLength()
 {
+  if (m_useIsoEngine && m_isoEngine)
+    return m_isoEngine->GetLength();
+
   if (!m_opened) return 0;
   return m_state->m_fileSize;
 }
 
 int64_t CCurlFile::GetPosition()
 {
+  if (m_useIsoEngine && m_isoEngine)
+    return m_isoEngine->GetPosition();
+
   if (!m_opened) return 0;
   return m_state->m_filePos;
 }
 
 int CCurlFile::Stat(const CURL& url, struct __stat64* buffer)
 {
+  // ★ ISO files: return unknown size. Worker discovers size via redirect.
+  // Do NOT create a temp Engine — that would burn the CDN redirect token.
+  if (IsIsoUrl(url))
+  {
+    if (buffer) { *buffer = {}; buffer->st_size = -1; buffer->st_mode = _S_IFREG; }
+    return 0;
+  }
+
   // if file is already running, get info from it
   if( m_opened )
   {
@@ -2166,4 +2240,45 @@ void CCurlFile::PreloadCaCertsBlob()
   {
     CLog::LogF(LOGERROR, "failed to load 'system/certs/cacert.pem'");
   }
+}
+
+ssize_t CCurlFile::Read(void* lpBuf, size_t uiBufSize)
+{
+  if (m_useIsoEngine && m_isoEngine)
+    return m_isoEngine->Read(lpBuf, uiBufSize);
+
+  return m_state->Read(lpBuf, uiBufSize);
+}
+
+bool CCurlFile::IsIsoUrl(const CURL& url)
+{
+  // Only activate engine for HTTP/HTTPS/DAV .iso files
+  if (!url.IsProtocol("http") && !url.IsProtocol("https") &&
+      !url.IsProtocol("dav") && !url.IsProtocol("davs"))
+    return false;
+
+  // Use CURLU to properly extract path component (strips ?query and #fragment)
+  CURLU* h = curl_url();
+  if (!h)
+    return false;
+
+  bool isIso = false;
+  char* path = nullptr;
+  if (curl_url_set(h, CURLUPART_URL, url.Get().c_str(), CURLU_NON_SUPPORT_SCHEME) == CURLUE_OK &&
+      curl_url_get(h, CURLUPART_PATH, &path, 0) == CURLUE_OK && path)
+  {
+    std::string p(path);
+    size_t lastSlash = p.rfind('/');
+    std::string filename = (lastSlash == std::string::npos) ? p : p.substr(lastSlash + 1);
+    size_t dotPos = filename.rfind('.');
+    if (dotPos != std::string::npos)
+    {
+      std::string ext = filename.substr(dotPos + 1);
+      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+      isIso = (ext == "iso");
+    }
+    curl_free(path);
+  }
+  curl_url_cleanup(h);
+  return isIso;
 }
