@@ -21,6 +21,8 @@
 #include "HevcSei.h"
 #include "HDR10Plus.h"
 #include "HDR10PlusConvert.h"
+#include "HDRVivid.h"
+#include "HDRVividConvert.h"
 
 extern "C" {
 #include <libavutil/avutil.h>
@@ -147,6 +149,10 @@ public:
   void SetDualPriorityHdr10Plus(bool value) { m_dual_priority_Hdr10Plus = value; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
+  void SetConvertHdrVivid(bool value) { m_convert_HdrVivid = value; }
+  void SetPreferCovertHdrVivid(bool value) { m_prefer_HdrVivid_conversion = value; }
+  void SetDualPriorityHdrVivid(bool value) { m_dual_priority_HdrVivid = value; }
+  void SetRemoveHdrVivid(bool value) { m_removeHdrVivid = value; }
 
   static bool mpeg2_sequence_header(const uint8_t* data,
                                     const uint32_t size,
@@ -188,6 +194,7 @@ protected:
 
   void AddDoViRpuNaluWrap(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts);
   void AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts) const;
+  void AddDoViRpuNaluFromVivid(const HdrVividMetadata& meta, uint8_t **poutbuf, int *poutbuf_size) const;
 
   void ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, uint32_t& poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
   void ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
@@ -230,6 +237,12 @@ protected:
   bool m_convert_Hdr10Plus;
   bool m_prefer_Hdr10Plus_conversion;
   bool m_dual_priority_Hdr10Plus;
+  bool m_removeHdrVivid{false};
+  bool m_convert_HdrVivid{false};
+  bool m_prefer_HdrVivid_conversion{false};
+  bool m_dual_priority_HdrVivid{false};
+  std::optional<HdrVividMetadata> m_pendingVividMeta;
+  bool m_pendingVividConvert{false};
   enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source;
   bool m_first_frame;
   HDRStaticMetadataInfo m_hdrStaticMetadataInfo;

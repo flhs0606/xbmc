@@ -25050,16 +25050,16 @@ msgctxt "#60122"
 msgid "When both DV and HDR10+ video streams are present, choose conversion from HDR10+ video to DV over using the original DV video, note any FEL will be discarded in this case."
 msgstr ""
 
-#. "Dolby Vision HDR10+"
+#. "Dolby Vision HDR10+/HDR Vivid"
 #: system/settings/settings.xml
 msgctxt "#60131"
-msgid "Choose DV or HDR10+ video stream to output when both are present"
+msgid "Choose DV, HDR10+ or HDR Vivid video stream to output when multiple are present"
 msgstr ""
 
-#. "Dolby Vision HDR10+"
+#. "Dolby Vision HDR10+/HDR Vivid"
 #: system/settings/settings.xml
 msgctxt "#60132"
-msgid "When both DV and HDR10+ video streams are present, choose which video stream to output."
+msgid "When DV, HDR10+ and/or HDR Vivid video streams are present, choose which video stream to output."
 msgstr ""
 
 #. "Dolby Vision HDR10+"
@@ -25072,6 +25072,48 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#60134"
 msgid "HDR10+"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60110"
+msgid "Convert HDR Vivid video to DV profile 8.1 during playback"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60111"
+msgid "Set to On to dynamically convert HDR Vivid video to DV profile 8.1 video during playback."
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60123"
+msgid "Choose HDR Vivid conversion to DV instead of original DV video stream when both are present"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60124"
+msgid "When both DV and HDR Vivid video streams are present, choose conversion from HDR Vivid video to DV over using the original DV video, note any FEL will be discarded in this case."
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60135"
+msgid "HDR Vivid"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid disable"
+#: system/settings/settings.xml
+msgctxt "#60136"
+msgid "Disable HDR Vivid"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid disable help"
+#: system/settings/settings.xml
+msgctxt "#60137"
+msgid "Enable this setting to strip all HDR Vivid dynamic metadata from the bitstream, degrading the content to standard HDR10. Conversion to Dolby Vision from HDR Vivid will be unavailable when this is enabled."
 msgstr ""
 
 #. "Dolby Vision Display Led Source Levels Metadata"

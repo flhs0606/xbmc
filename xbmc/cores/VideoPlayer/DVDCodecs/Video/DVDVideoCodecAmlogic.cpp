@@ -361,7 +361,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       {
         auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
-        bool dualPriorityHdr10Plus = (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1);
+        int dualPriorityValue = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
+        bool dualPriorityHdr10Plus = (dualPriorityValue == 1);
+        bool dualPriorityHdrVivid  = (dualPriorityValue == 2);
 
         if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
         {
@@ -378,11 +380,27 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           }
           m_appendCMv40ModeApplied = cmv40Mode;
 
+          // Global Vivid disable: strip Vivid metadata regardless of priority.
+          // Only applies when Vivid does NOT have priority (dual_priority != 2).
+          if (dualPriorityValue != 2 &&
+              settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE))
+          {
+            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - HDR Vivid is disabled; removing Vivid metadata if present.",
+                      __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetRemoveHdrVivid(true);
+          }
+
           if (dualPriorityHdr10Plus)
           {
             CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, native HDR10+ has priority.",
                       __MODULE_NAME__, __FUNCTION__);
             m_bitstream->SetDualPriorityHdr10Plus(true);
+          }
+          else if (dualPriorityHdrVivid)
+          {
+            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR Vivid, native HDR Vivid has priority.",
+                      __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetDualPriorityHdrVivid(true);
           }
           else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT)) 
           {
@@ -391,6 +409,15 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
             if (preferConvertHdr10Plus) 
               CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, conversion will be prefered over original Dolby Vision.",
+                        __MODULE_NAME__, __FUNCTION__);
+          }
+          else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+          {
+            bool preferConvertHdrVivid = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT);
+            m_bitstream->SetPreferCovertHdrVivid(preferConvertHdrVivid);
+
+            if (preferConvertHdrVivid)
+              CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR Vivid, conversion will be prefered over original Dolby Vision.",
                         __MODULE_NAME__, __FUNCTION__);
           }
 
@@ -416,6 +443,25 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(peakBrightnessSource);
         }
 
+        // Potential HDR Vivid (Cannot tell at this point)
+        // Check disable flag first — when disabled, strip all Vivid metadata
+        // and degrade to plain HDR10.  This is only applicable when priority
+        // is DV (0) or HDR10+ (1), i.e. Vivid does NOT have priority.
+        bool vividDisabled = (dualPriorityValue != 2) &&
+                             settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE);
+        if (vividDisabled)
+        {
+          CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then metadata will be removed and content downgraded to HDR10.",
+                    __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetRemoveHdrVivid(true);
+        }
+        else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+        {
+          CLog::Log(LOGDEBUG, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then will be converted to Dolby Vision P8.1",
+            __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetConvertHdrVivid(true);
+        }
+
         // If HDR10 or Dual Priority HDR10+ and doing VS10 - remove the HDR10+ and DV if present to avoid conflict with VS10.
         if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) || dualPriorityHdr10Plus)
         {
@@ -426,6 +472,26 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR10+ then metadata will be removed to allow correct VS10 processing",
               __MODULE_NAME__, __FUNCTION__);
             m_bitstream->SetRemoveHdr10Plus(true);
+            m_bitstream->SetRemoveDovi(true);
+          }
+        }
+
+        // If HDR10 or Dual Priority HDR Vivid and doing VS10 — remove the
+        // Vivid and DV if present to avoid conflict with VS10.
+        //
+        // NOTE: Do NOT include vividDisabled here.  vividDisabled means
+        // "strip Vivid, degrade to HDR10" which is handled by
+        // SetRemoveHdrVivid() above.  Adding it here would also trigger
+        // SetRemoveDovi() for pure DV streams (P5/P8) that carry no
+        // Vivid metadata — accidentally killing legitimate Dolby Vision.
+        if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) || dualPriorityHdrVivid)
+        {
+          unsigned int mode(aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS));
+          if (mode < DOLBY_VISION_OUTPUT_MODE_BYPASS)
+          {
+            CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then metadata will be removed to allow correct VS10 processing",
+              __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetRemoveHdrVivid(true);
             m_bitstream->SetRemoveDovi(true);
           }
         }

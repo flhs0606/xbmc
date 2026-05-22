@@ -291,6 +291,9 @@ static unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitD
     case StreamHdrType::HDR_TYPE_DOLBYVISION:
       vs10_mode = aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
       break;
+    case StreamHdrType::HDR_TYPE_HDRVIVID:
+      vs10_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+      break;
   }
    
   if (vs10_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS)
@@ -987,7 +990,8 @@ void aml_hevc_nal_skip_policy(const int value)
 void aml_set_osd_pq_bypass(StreamHdrType hdrType)
 {
   const bool enable = ((hdrType == StreamHdrType::HDR_TYPE_HDR10) ||
-                       (hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS));
+                       (hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) ||
+                       (hdrType == StreamHdrType::HDR_TYPE_HDRVIVID));
 
   CSysfsPath("/sys/module/am_vecm/parameters/osd_pq_bypass", enable);
   logM(LOGDEBUG, "AMLUtils", "am_vecm osd_pq_bypass [{}]", enable ? "enabled" : "disabled");
