@@ -300,6 +300,8 @@ public:
    */
   void SetSubtitleVerticalPosition(const int value, bool save) override;
 
+  void SetDynamicSubtitleOffset(const float value) override;
+
   void AddSubtitle(const std::string& strSubPath) override;
 
   int GetAudioStreamCount() const override;

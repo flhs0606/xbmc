@@ -88,6 +88,13 @@ public:
    */
   void SetSubtitleVerticalPosition(const int value, bool save);
 
+  /*!
+   * \brief Set the dynamic subtitle offset,
+   * in percentage of screen height (-100 ~ 100, negative = up, positive = down)
+   * \param value The offset percentage
+   */
+  void SetDynamicSubtitleOffset(const float value);
+
   unsigned int AllocRenderCapture();
   void ReleaseRenderCapture(unsigned int captureId);
   void StartRenderCapture(unsigned int captureId, unsigned int width, unsigned int height, int flags);

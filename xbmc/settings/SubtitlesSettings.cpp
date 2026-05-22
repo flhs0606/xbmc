@@ -38,7 +38,8 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
        CSettings::SETTING_SUBTITLES_LANGUAGES,      CSettings::SETTING_SUBTITLES_STORAGEMODE,
        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
-       CSettings::SETTING_SUBTITLES_MOVIE});
+       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LOCALMOVEMENT,
+       CSettings::SETTING_SUBTITLES_POSITIONPERCENTAGE});
 }
 
 CSubtitlesSettings::~CSubtitlesSettings()
@@ -146,6 +147,16 @@ float CSubtitlesSettings::GetVerticalMarginPerc() const {
   // We return the vertical margin as percentage
   // to fit the current screen resolution
   return static_cast<float>(m_settings->GetNumber(CSettings::SETTING_SUBTITLES_MARGINVERTICAL));
+}
+
+bool CSubtitlesSettings::IsLocalMovementEnabled() const
+{
+  return m_settings->GetBool(CSettings::SETTING_SUBTITLES_LOCALMOVEMENT);
+}
+
+float CSubtitlesSettings::GetPositionPercentage() const
+{
+  return static_cast<float>(m_settings->GetInt(CSettings::SETTING_SUBTITLES_POSITIONPERCENTAGE));
 }
 
 void CSubtitlesSettings::SettingOptionsSubtitleFontsFiller(const SettingConstPtr& setting,

@@ -3621,6 +3621,11 @@ void CVideoPlayer::SetSubtitleVerticalPosition(int value, bool save)
   m_renderManager.SetSubtitleVerticalPosition(value, save);
 }
 
+void CVideoPlayer::SetDynamicSubtitleOffset(float value)
+{
+  m_renderManager.SetDynamicSubtitleOffset(value);
+}
+
 std::shared_ptr<TextCacheStruct_t> CVideoPlayer::GetTeletextCache()
 {
   if (m_CurrentTeletext.id < 0)

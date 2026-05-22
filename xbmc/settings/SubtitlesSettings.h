@@ -196,6 +196,18 @@ public:
    */
   float GetVerticalMarginPerc() const;
 
+  /*!
+   * \brief Check if local subtitle movement is enabled
+   * \return True if local movement is enabled, otherwise false
+   */
+  bool IsLocalMovementEnabled() const;
+
+  /*!
+   * \brief Get the subtitle position percentage from top of screen
+   * \return The percentage from top (10-90)
+   */
+  float GetPositionPercentage() const;
+
   static void SettingOptionsSubtitleFontsFiller(const std::shared_ptr<const CSetting>& setting,
                                                 std::vector<StringSettingOption>& list,
                                                 std::string& current,

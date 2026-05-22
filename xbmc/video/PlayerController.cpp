@@ -33,14 +33,8 @@
 #include "video/dialogs/GUIDialogAudioSettings.h"
 
 using namespace KODI;
-using namespace UTILS;
 
-CPlayerController::CPlayerController()
-{
-  MOVING_SPEED::EventCfg eventCfg{100.0f, 300.0f, 200};
-  m_movingSpeed.AddEventConfig(ACTION_SUBTITLE_VSHIFT_UP, eventCfg);
-  m_movingSpeed.AddEventConfig(ACTION_SUBTITLE_VSHIFT_DOWN, eventCfg);
-}
+CPlayerController::CPlayerController() = default;
 
 CPlayerController::~CPlayerController() = default;
 
@@ -343,66 +337,23 @@ bool CPlayerController::OnAction(const CAction &action)
 
       case ACTION_SUBTITLE_VSHIFT_UP:
       {
-        const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
-        SUBTITLES::Align subAlign{settings->GetAlignment()};
-        if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
-          return true;
+        m_subtitleDynamicOffset -= 0.5f;
+        if (m_subtitleDynamicOffset < -100.0f)
+          m_subtitleDynamicOffset = -100.0f;
+        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
 
-        RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-        CVideoSettings vs = appPlayer->GetVideoSettings();
-
-        int maxPos = resInfo.Overscan.bottom;
-        if (subAlign == SUBTITLES::Align::BOTTOM_OUTSIDE)
-        {
-          maxPos =
-              resInfo.Overscan.bottom + static_cast<int>(static_cast<float>(resInfo.iHeight) / 100 *
-                                                         settings->GetVerticalMarginPerc());
-        }
-
-        vs.m_subtitleVerticalPosition -=
-            static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_UP));
-        if (vs.m_subtitleVerticalPosition < resInfo.Overscan.top)
-          vs.m_subtitleVerticalPosition = resInfo.Overscan.top;
-        appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
-                                               action.GetText() == "save");
-
-        ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
-                   static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
+        ShowSlider(action.GetID(), 277, m_subtitleDynamicOffset, -100.0f, 0.5f, 100.0f);
         return true;
       }
 
       case ACTION_SUBTITLE_VSHIFT_DOWN:
       {
-        const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
-        SUBTITLES::Align subAlign{settings->GetAlignment()};
-        if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
-          return true;
+        m_subtitleDynamicOffset += 0.5f;
+        if (m_subtitleDynamicOffset > 100.0f)
+          m_subtitleDynamicOffset = 100.0f;
+        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
 
-        RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-        CVideoSettings vs = appPlayer->GetVideoSettings();
-
-        int maxPos = resInfo.Overscan.bottom;
-        if (subAlign == SUBTITLES::Align::BOTTOM_OUTSIDE)
-        {
-          // In this case the position not includes the vertical margin,
-          // so to be able to move the text to the bottom of the screen
-          // we must extend the maximum position with the vertical margin.
-          // Note that the text may go also slightly off-screen, this is
-          // caused by Libass see "displacement compensation" on OverlayRenderer
-          maxPos =
-              resInfo.Overscan.bottom + static_cast<int>(static_cast<float>(resInfo.iHeight) / 100 *
-                                                         settings->GetVerticalMarginPerc());
-        }
-
-        vs.m_subtitleVerticalPosition +=
-            static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_DOWN));
-        if (vs.m_subtitleVerticalPosition > maxPos)
-          vs.m_subtitleVerticalPosition = maxPos;
-        appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
-                                               action.GetText() == "save");
-
-        ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
-                   static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
+        ShowSlider(action.GetID(), 277, m_subtitleDynamicOffset, -100.0f, 0.5f, 100.0f);
         return true;
       }
 
@@ -411,16 +362,18 @@ bool CPlayerController::OnAction(const CAction &action)
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
         SUBTITLES::Align align{settings->GetAlignment()};
 
-        align = static_cast<SUBTITLES::Align>(static_cast<int>(align) + 1);
-
-        if (align != SUBTITLES::Align::MANUAL && align != SUBTITLES::Align::BOTTOM_INSIDE &&
-            align != SUBTITLES::Align::BOTTOM_OUTSIDE && align != SUBTITLES::Align::TOP_INSIDE &&
-            align != SUBTITLES::Align::TOP_OUTSIDE)
+        do
         {
-          align = SUBTITLES::Align::MANUAL;
-        }
+          align = static_cast<SUBTITLES::Align>(static_cast<int>(align) + 1);
+          if (static_cast<int>(align) > static_cast<int>(SUBTITLES::Align::TOP_OUTSIDE))
+            align = SUBTITLES::Align::BOTTOM_INSIDE;
+        } while (align == SUBTITLES::Align::MANUAL);
 
         settings->SetAlignment(align);
+
+        m_subtitleDynamicOffset = 0.0f;
+        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
+
         CGUIDialogKaiToast::QueueNotification(
             CGUIDialogKaiToast::Info, g_localizeStrings.Get(21460),
             g_localizeStrings.Get(21461 + static_cast<int>(align)), TOAST_DISPLAY_TIME, false);
@@ -556,7 +509,7 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
   else if (m_sliderAction == ACTION_SUBTITLE_VSHIFT_UP ||
            m_sliderAction == ACTION_SUBTITLE_VSHIFT_DOWN)
   {
-    std::string strValue = StringUtils::Format("{:.0f}px", slider->GetFloatValue());
+    std::string strValue = StringUtils::Format("{:.1f} %", slider->GetFloatValue());
     slider->SetTextValue(strValue);
   }
   else if (m_sliderAction == ACTION_VOLAMP_UP ||

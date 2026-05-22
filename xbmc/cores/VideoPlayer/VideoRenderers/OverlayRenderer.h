@@ -84,6 +84,8 @@ namespace OVERLAY {
     int m_3dSubtitleDepth{0};
     bool m_pgsSubtitle{false};
 
+    bool m_isDynamic{false}; // true if subtitle can be moved up/down (dynamic), false if fixed (static)
+
   protected:
     /*!
      * \brief Given the resolution ratio determines if it is a 4/3 resolution
@@ -130,6 +132,13 @@ namespace OVERLAY {
      */
     void SetSubtitleVerticalPosition(const int value, bool save);
 
+    /*!
+     * \brief Set the dynamic subtitle offset,
+     * in percentage of screen height (-100 ~ 100, negative = up, positive = down)
+     * \param value The offset percentage
+     */
+    void SetDynamicSubtitleOffset(const float value);
+
   protected:
     /*!
      * \brief Reset the subtitle position to default value
@@ -174,11 +183,7 @@ namespace OVERLAY {
      */
     void LoadSettings();
 
-    enum PositonResInfoState
-    {
-      POSRESINFO_UNSET = -1,
-      POSRESINFO_SAVE_CHANGES = -2,
-    };
+    int m_subtitleViewHeight{0}; // track view height to detect resolution changes
 
     CCriticalSection m_section;
     std::vector<SElement> m_buffers[NUM_BUFFERS];
@@ -192,15 +197,13 @@ namespace OVERLAY {
     std::string m_stereomode;
     // Current subtitle position
     int m_subtitlePosition{0};
-    // Current subtitle position from resolution info,
-    // or PositonResInfoState enum values for deferred processing
-    int m_subtitlePosResInfo{POSRESINFO_UNSET};
     int m_subtitleVerticalMargin{0};
-    bool m_saveSubtitlePosition{false}; // To save subtitle position permanently
     KODI::SUBTITLES::HorizontalAlign m_subtitleHorizontalAlign{
         KODI::SUBTITLES::HorizontalAlign::CENTER};
     KODI::SUBTITLES::Align m_subtitleAlign{KODI::SUBTITLES::Align::BOTTOM_OUTSIDE};
 
+    mutable std::atomic<float> m_subtitleDynamicOffset{0.0f}; // dynamic subtitle offset in percentage of screen height
+                                                              // negative = up, positive = down
     std::shared_ptr<struct KODI::SUBTITLES::STYLE::style> m_overlayStyle;
     std::atomic<bool> m_isSettingsChanged{false};
   };

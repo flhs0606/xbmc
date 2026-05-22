@@ -169,17 +169,17 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
-  ManageRenderArea();
-
   CAMLVideoBuffer *amli = static_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
   if(amli && amli->m_amlCodec)
   {
     uint64_t pts = amli->m_omxPts;
     if (pts != m_prevVPts)
     {
-      amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex);
+      ManageRenderArea();
+
       amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
-      amli->m_amlCodec = nullptr; //Mark frame as processed
+      amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex);
+      amli->m_amlCodec = nullptr;
       m_prevVPts = pts;
     }
   }

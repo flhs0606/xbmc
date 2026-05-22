@@ -17,7 +17,6 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
-#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "windowing/GraphicContext.h"
@@ -74,13 +73,6 @@ void CRenderer::Release(std::vector<SElement>& list)
 
 void CRenderer::UnInit()
 {
-  if (m_saveSubtitlePosition)
-  {
-    m_saveSubtitlePosition = false;
-    CDisplaySettings::GetInstance().UpdateCalibrations();
-    CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
-  }
-
   Flush();
 }
 
@@ -102,7 +94,8 @@ void CRenderer::Flush()
 void CRenderer::Reset()
 {
   m_subtitlePosition = 0;
-  m_subtitlePosResInfo = -1;
+  m_subtitleDynamicOffset.store(0.0f, std::memory_order_relaxed);
+  m_subtitleViewHeight = 0;
 }
 
 void CRenderer::Release(int idx)
@@ -255,6 +248,26 @@ void CRenderer::Render(COverlay* o) const {
 
   state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
 
+  // Classify non-ASS subtitles (image/SPU) based on final screen y position
+  // ASS subtitles are classified earlier in ConvertLibass based on rOpts.position
+  const auto subSettings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+  const bool localMovement = subSettings->IsLocalMovementEnabled();
+  const float posPct = subSettings->GetPositionPercentage();
+
+  if (o->m_align != COverlay::ALIGN_SCREEN)
+  {
+    const float dynamicThreshold = m_rv.y1 + m_rv.Height() * (posPct / 100.0f);
+    o->m_isDynamic = (state.y >= dynamicThreshold);
+  }
+
+  // Apply dynamic subtitle offset (percentage of screen height)
+  // When local movement is enabled, only affects subtitles marked as dynamic
+  // When local movement is disabled, affects all subtitles on screen
+  if (!localMovement || o->m_isDynamic)
+  {
+    state.y += m_rv.Height() * m_subtitleDynamicOffset.load(std::memory_order_relaxed) / 100.0f;
+  }
+
   o->Render(state);
 }
 
@@ -284,51 +297,28 @@ void CRenderer::SetStereoMode(const std::string &stereomode)
   m_stereomode = stereomode;
 }
 
+void CRenderer::SetDynamicSubtitleOffset(const float value)
+{
+  m_subtitleDynamicOffset.store(value, std::memory_order_relaxed);
+}
+
 void CRenderer::SetSubtitleVerticalPosition(const int value, bool save)
 {
   std::lock_guard lock(m_section);
-
   m_subtitlePosition = value;
-
-  if (save && m_subtitleAlign == SUBTITLES::Align::MANUAL)
-  {
-    m_subtitlePosResInfo = POSRESINFO_SAVE_CHANGES;
-    // We save the value to XML file settings when playback is stopped
-    // to avoid saving to disk too many times
-    m_saveSubtitlePosition = true;
-  }
 }
 
 void CRenderer::ResetSubtitlePosition()
 {
-  // In the 'pos' var the vertical margin has been substracted because
-  // we need to know the actual text baseline position on screen
   int pos{0};
-  m_saveSubtitlePosition = false;
   RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
 
-  if (m_subtitleAlign == SUBTITLES::Align::MANUAL)
-  {
-    // The position must be fixed to match the subtitle calibration bar
-    m_subtitleVerticalMargin = static_cast<int>(
-        static_cast<float>(resInfo.iHeight) / 100 *
-        CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc());
+  m_subtitleVerticalMargin = static_cast<int>(
+      static_cast<float>(m_rv.Height()) / 100 *
+      CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc());
 
-    m_subtitlePosResInfo = resInfo.iSubtitles;
-    pos = resInfo.iSubtitles - m_subtitleVerticalMargin;
-  }
-  else
-  {
-    // The position must be relative to the screen frame
-    m_subtitleVerticalMargin = static_cast<int>(
-        static_cast<float>(m_rv.Height()) / 100 *
-        CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc());
+  pos = static_cast<int>(m_rv.Height()) - m_subtitleVerticalMargin + resInfo.Overscan.top;
 
-    m_subtitlePosResInfo = static_cast<int>(m_rv.Height());
-    pos = static_cast<int>(m_rv.Height()) - m_subtitleVerticalMargin + resInfo.Overscan.top;
-  }
-
-  // Update player value (and callback to CRenderer::SetSubtitleVerticalPosition)
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
   appPlayer->SetSubtitleVerticalPosition(pos, false);
@@ -418,26 +408,13 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   rOpts.frameWidth = m_rv.Width();
   rOpts.frameHeight = m_rv.Height();
 
-  // Set position of subtitles based on video calibration settings
-  RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-  // Keep track of subtitle position value change,
-  // can be changed by GUI Calibration or by window mode/resolution change or
-  // by user manual change (e.g. keyboard shortcut)
-  if (m_subtitlePosResInfo != resInfo.iSubtitles)
+  if (m_subtitleViewHeight != m_rv.Height())
   {
-    if (m_subtitlePosResInfo == POSRESINFO_SAVE_CHANGES)
-    {
-      // m_subtitlePosition has been changed
-      // and has been requested to save the value to resInfo
-      resInfo.iSubtitles = m_subtitlePosition + m_subtitleVerticalMargin;
-      CServiceBroker::GetWinSystem()->GetGfxContext().SetResInfo(
-          CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), resInfo);
-      m_subtitlePosResInfo = m_subtitlePosition + m_subtitleVerticalMargin;
-    }
-    else
-      ResetSubtitlePosition();
+    m_subtitleViewHeight = static_cast<int>(m_rv.Height());
+    ResetSubtitlePosition();
   }
 
+  RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
   rOpts.m_par = resInfo.fPixelRatio;
 
   // rOpts.position and margins (set to style) can invalidate the text
@@ -447,35 +424,6 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   if (o.IsForcedMargins())
   {
     rOpts.marginsMode = SUBTITLES::STYLE::MarginsMode::DISABLED;
-  }
-  else if (m_subtitleAlign == SUBTITLES::Align::MANUAL)
-  {
-    // When vertical margins are used Libass apply a displacement in percentage
-    // of the height available to line position, this displacement causes
-    // problems with subtitle calibration bar on Video Calibration window,
-    // so when you moving the subtitle bar of the GUI the text will no longer
-    // match the bar, this calculation compensates for the displacement.
-    // Note also that the displacement compensation will cause a different
-    // default position of the text, different from the other alignment positions
-    double posPx = static_cast<double>(m_subtitlePosition - resInfo.Overscan.top);
-
-    double frameHeight = static_cast<double>(rOpts.frameHeight);
-
-    if (m_stereomode == "top_bottom" || m_stereomode == "bottom_top")
-    {
-      // only half-ou video, ou video don't need to correct frame height
-      if (rOpts.sourceWidth / rOpts.sourceHeight > 1.2f)
-        frameHeight *= 2.0;
-    }
-
-    int assPlayResY = o.GetLibassHandler()->GetPlayResY();
-    double assVertMargin = static_cast<double>(overlayStyle->marginVertical) *
-                           (static_cast<double>(assPlayResY) / 720);
-
-    double vertMarginScaled = assVertMargin / assPlayResY * frameHeight;
-    double pos = posPx / (frameHeight - vertMarginScaled);
-
-    rOpts.position = 100 - pos * 100;
   }
   else if (m_subtitleAlign == SUBTITLES::Align::BOTTOM_OUTSIDE)
   {
@@ -524,6 +472,9 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   }
 
   std::shared_ptr<COverlay> overlay = COverlay::Create(images, rOpts.frameWidth, rOpts.frameHeight);
+
+  // Classify ASS/libass subtitles based on libass line position (0=bottom, 100=top)
+  overlay->m_isDynamic = (rOpts.position < 20.0);
 
   m_textureCache[m_textureid] = overlay;
   o.m_textureid = m_textureid;
@@ -585,13 +536,6 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
     case ObservableMessageSettingsChanged:
     {
       m_isSettingsChanged = true;
-      break;
-    }
-    case ObservableMessagePositionChanged:
-    {
-      std::lock_guard lock(m_section);
-      
-      m_subtitlePosResInfo = POSRESINFO_UNSET;
       break;
     }
     default:

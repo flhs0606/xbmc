@@ -24052,6 +24052,30 @@ msgctxt "#39189"
 msgid "Available only with manual subtitle position"
 msgstr ""
 
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39202"
+msgid "Enable local subtitle movement"
+msgstr ""
+
+#. Help text for setting "Enable local subtitle movement" of label #39202
+#: system/settings/settings.xml
+msgctxt "#39203"
+msgid "When enabled, only subtitles in the lower portion of the screen will be moved. When disabled, all subtitles on the screen will be moved together."
+msgstr ""
+
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39204"
+msgid "Subtitle position from top"
+msgstr ""
+
+#. Help text for setting "Subtitle position from top" of label #39204
+#: system/settings/settings.xml
+msgctxt "#39205"
+msgid "Defines the threshold percentage from the top of screen below which subtitles are affected by local movement."
+msgstr ""
+
 #. Help text for setting "Use system HDR/SDR brightness balance" of label #36096
 #: system/settings/settings.xml
 msgctxt "#39190"

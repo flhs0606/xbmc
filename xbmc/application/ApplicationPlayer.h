@@ -163,6 +163,13 @@ public:
    */
   void SetSubtitleVerticalPosition(const int value, bool save);
 
+  /*!
+   * \brief Set the dynamic subtitle offset,
+   * in percentage of screen height (-100 ~ 100, negative = up, positive = down)
+   * \param value The offset percentage
+   */
+  void SetDynamicSubtitleOffset(const float value);
+
   void SetTime(int64_t time);
   void SetTotalTime(int64_t time);
   void SetVideoStream(int iStream);

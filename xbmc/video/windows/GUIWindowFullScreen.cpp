@@ -29,6 +29,7 @@
 #include "video/ViewModeSettings.h"
 #include "video/dialogs/GUIDialogFullScreenInfo.h"
 #include "video/dialogs/GUIDialogSubtitleSettings.h"
+#include "video/PlayerController.h"
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
@@ -167,6 +168,20 @@ bool CGUIWindowFullScreen::OnAction(const CAction &action)
       std::string path = CGUIDialogSubtitleSettings::BrowseForSubtitle();
       if (!path.empty())
         appPlayer->AddSubtitle(path);
+      return true;
+    }
+  case ACTION_MOVE_UP:
+    {
+      if (appPlayer->IsInMenu())
+        break;
+      CPlayerController::GetInstance().OnAction(CAction(ACTION_SUBTITLE_VSHIFT_UP));
+      return true;
+    }
+  case ACTION_MOVE_DOWN:
+    {
+      if (appPlayer->IsInMenu())
+        break;
+      CPlayerController::GetInstance().OnAction(CAction(ACTION_SUBTITLE_VSHIFT_DOWN));
       return true;
     }
   default:

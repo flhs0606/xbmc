@@ -132,6 +132,13 @@ public:
    */
   virtual void SetSubtitleVerticalPosition(int value, bool save) {}
 
+  /*!
+   * \brief Set the dynamic subtitle offset,
+   * in percentage of screen height (-100 ~ 100, negative = up, positive = down)
+   * \param value The offset percentage
+   */
+  virtual void SetDynamicSubtitleOffset(float value) {}
+
   /** \brief Adds the subtitle(s) provided by the given file to the available player streams
   *          and actives the first of the added stream(s). E.g., vob subs can contain multiple streams.
   *   \param[in] strSubPath The full path of the subtitle file.

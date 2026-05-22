@@ -704,6 +704,15 @@ void CApplicationPlayer::SetSubtitleVerticalPosition(int value, bool save)
   }
 }
 
+void CApplicationPlayer::SetDynamicSubtitleOffset(float value)
+{
+  std::shared_ptr<IPlayer> player = GetInternal();
+  if (player)
+  {
+    player->SetDynamicSubtitleOffset(value);
+  }
+}
+
 void CApplicationPlayer::SetTime(int64_t time)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
