@@ -2409,8 +2409,8 @@ bool CAMLCodec::GetNextDequeuedBuffer()
   m_cur_pts = pts;
   m_bufferIndex = vbuf.index;
 
-  if ((m_last_pts != DVD_NOPTS_VALUE) && (m_cur_pts <= m_last_pts))
-    logM(LOGWARNING, "CAMLCodec", "current pts:[{}] <= last pts:[{}]", m_cur_pts, m_last_pts);
+  CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::GetNextDequeuedBuffer: pts:{:.3f} idx:{:d}",
+                      static_cast<double>(m_cur_pts) / DVD_TIME_BASE, vbuf.index);
 
   return true;
 }
