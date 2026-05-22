@@ -209,14 +209,23 @@ inline void PopulateDoviRpuInfo(DoviRpuOpaque* opaque,
     DOVIStreamInfo doviStreamInfo;
     const DoviRpuDataHeader* header = dovi_rpu_get_header(opaque);
     doviElType = DOVIELType::TYPE_NONE;
-    aml_dv_send_profile(header->guessed_profile);
 
-    if (header && ((header->guessed_profile == 4) || (header->guessed_profile == 7)) && header->el_type)
+    // header can be NULL even when opaque is valid, e.g. on resume
+    // where a mid-stream seek lands on a partially corrupt RPU.
+    if (header)
     {
-      if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
-        doviElType = DOVIELType::TYPE_FEL;
-      else if (StringUtils::EqualsNoCase(header->el_type, "MEL"))
-        doviElType = DOVIELType::TYPE_MEL;
+      aml_dv_send_profile(header->guessed_profile);
+
+      if ((header->guessed_profile == 4) || (header->guessed_profile == 7))
+      {
+        if (header->el_type)
+        {
+          if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
+            doviElType = DOVIELType::TYPE_FEL;
+          else if (StringUtils::EqualsNoCase(header->el_type, "MEL"))
+            doviElType = DOVIELType::TYPE_MEL;
+        }
+      }
     }
 
     doviStreamInfo.dovi_el_type = doviElType;
@@ -684,6 +693,34 @@ void CBitstreamConverter::AddDoViRpuNalu(const Hdr10PlusMetadata& meta,
 
   GetDoviRpuInfo(nalu.data(), static_cast<uint32_t>(nalu.size()), m_first_frame, m_hints.dovi_el_type,
                 m_hints.dovi, pts, m_dataCacheCore);
+
+  BitstreamAllocAndCopy(poutbuf, poutbufSize, nullptr, 0, nalu.data(),
+                        static_cast<uint32_t>(nalu.size()), HEVC_NAL_UNSPEC62);
+}
+
+void CBitstreamConverter::AddDoViRpuNaluFromVivid(const HdrVividMetadata& meta,
+                                                  uint8_t** poutbuf,
+                                                  int* poutbufSize) const
+{
+  auto nalu = create_dovi_rpu_nalu_from_vivid(meta, m_hdrStaticMetadataInfo);
+
+  if (nalu.empty()) return;
+
+  if (m_first_frame)
+  {
+    m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+    m_hints.dovi.dv_version_major = 1;
+    m_hints.dovi.dv_version_minor = 0;
+    m_hints.dovi.dv_profile = 8;
+    m_hints.dovi.dv_level = 6;
+    m_hints.dovi.rpu_present_flag = 1;
+    m_hints.dovi.el_present_flag = 0;
+    m_hints.dovi.bl_present_flag = 1;
+    m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+  }
+
+  GetDoviRpuInfo(nalu.data(), static_cast<uint32_t>(nalu.size()), m_first_frame, m_hints.dovi_el_type,
+                m_hints.dovi, AV_NOPTS_VALUE, m_dataCacheCore);
 
   BitstreamAllocAndCopy(poutbuf, poutbufSize, nullptr, 0, nalu.data(),
                         static_cast<uint32_t>(nalu.size()), HEVC_NAL_UNSPEC62);
