@@ -10,11 +10,15 @@
 #include "File.h"
 #include "FileItem.h"
 #include "LangInfo.h"
+#include "ServiceBroker.h"
 #include "URL.h"
+#include "cores/VideoPlayer/DVDInputStreams/BlurayIsoCache.h"
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/Directory.h"
 #include "filesystem/DirectoryFactory.h"
 #include "guilib/LocalizeStrings.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/RegExp.h"
 #include "utils/StringUtils.h"
@@ -46,6 +50,13 @@ CBlurayDirectory::~CBlurayDirectory()
 
 void CBlurayDirectory::Dispose()
 {
+  if (m_isoCache)
+  {
+    m_isoCache->Stop();
+    m_isoCache.reset();
+  }
+  m_isoFile.reset();
+
   if(m_bd)
   {
     bd_close(m_bd);
@@ -273,11 +284,59 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
   if (fileHandler)
     m_realPath = fileHandler->ResolveMountPoint(root);
 
-  if (!bd_open_files(m_bd, &m_realPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
+  // Check if the root is a disc image (ISO) and use stream mode with LRU cache
+  CURL rootUrl(root);
+  bool isDiscImage = false;
+  std::string isoPath;
+
+  if (rootUrl.IsProtocol("udf"))
   {
-    CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {}",
-              CURL::GetRedacted(root));
-    return false;
+    isoPath = rootUrl.GetHostName();
+    CFileItem isoItem(isoPath, false);
+    isDiscImage = isoItem.IsDiscImage();
+  }
+
+  if (isDiscImage)
+  {
+    m_isoFile = std::make_shared<CFile>();
+    if (!m_isoFile->Open(isoPath))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open ISO file {}",
+                CURL::GetRedacted(isoPath));
+      return false;
+    }
+
+    const int64_t sourceLength = m_isoFile->GetLength();
+    if (sourceLength > 0)
+    {
+      const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+      CBlurayIsoCache::Config cacheConfig{};
+      cacheConfig.pageSize = adv->m_blurayIsoCachePageSize;
+      cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
+      m_isoCache = std::make_shared<CBlurayIsoCache>(
+          sourceLength,
+          [this](int64_t offset, uint8_t* buffer, size_t size) {
+            return ReadRaw(offset, buffer, size);
+          },
+          cacheConfig);
+      m_isoCache->Start();
+    }
+
+    if (!bd_open_stream(m_bd, this, ReadBlockCallback))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {} in stream mode",
+                CURL::GetRedacted(root));
+      return false;
+    }
+  }
+  else
+  {
+    if (!bd_open_files(m_bd, &m_realPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {}",
+                CURL::GetRedacted(root));
+      return false;
+    }
   }
   m_blurayInitialized = true;
 
@@ -297,6 +356,12 @@ std::string CBlurayDirectory::HexToString(const uint8_t *buf, int count)
 }
 
 std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
+  // ★ Skip disc.inf for HTTP ISO: disc.inf almost never exists (99.9% of ISOs),
+  // and CFile::Open would create a new HTTP connection consuming the CDN token
+  // which can cause 403 → crash. Let GetTitles fallback to bd_get_titles() API.
+  if (m_isoFile || m_isoCache)
+    return {};
+
   std::string root = m_url.GetHostName();
   std::string discInfPath = URIUtils::AddFileToFolder(root, "disc.inf");
   std::vector<BLURAY_TITLE_INFO*> userTitles;
@@ -345,6 +410,49 @@ std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
     file.Close();
   }
   return userTitles;
+}
+
+int CBlurayDirectory::ReadBlockCallback(void* handle, void* buf, int lba, int num_blocks)
+{
+  auto* self = static_cast<CBlurayDirectory*>(handle);
+  if (!self || !self->m_isoFile)
+    return -1;
+
+  if (self->m_isoCache)
+    return self->m_isoCache->ReadBlocks(static_cast<uint8_t*>(buf), lba, num_blocks);
+
+  // Fallback: direct read
+  int64_t offset = static_cast<int64_t>(lba) * 2048;
+  int64_t size = static_cast<int64_t>(num_blocks) * 2048;
+  ssize_t ret = self->ReadRaw(offset, static_cast<uint8_t*>(buf), static_cast<size_t>(size));
+  return ret > 0 ? static_cast<int>(ret / 2048) : -1;
+}
+
+int64_t CBlurayDirectory::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
+{
+  if (!m_isoFile || !buffer || size == 0)
+    return -1;
+
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return -1;
+
+  std::lock_guard lock(m_isoReadLock);
+
+  if (m_isoFile->Seek(offset, SEEK_SET) != offset)
+    return -1;
+
+  size_t totalRead = 0;
+  while (totalRead < size)
+  {
+    int chunk = m_isoFile->Read(buffer + totalRead, static_cast<int>(size - totalRead));
+    if (chunk < 0)
+      return -1;
+    if (chunk == 0)
+      break;
+    totalRead += static_cast<size_t>(chunk);
+  }
+
+  return static_cast<int64_t>(totalRead > 0 ? totalRead : -1);
 }
 
 } /* namespace XFILE */

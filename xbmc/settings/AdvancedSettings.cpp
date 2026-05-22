@@ -188,6 +188,12 @@ void CAdvancedSettings::Initialize()
   m_videoDecoderStreamBuffer = 90.0f;
   m_videoDecoderMinimumBuffer = 10.0f;
 
+  m_blurayIsoCachePageSize = 1024 * 1024;
+  m_blurayIsoCacheMaxBytes = 128 * 1024 * 1024;
+
+  m_curlFileLRUCacheBlockSize = 1024 * 1024;
+  m_curlFileLRUCacheMaxBytes = 128 * 1024 * 1024;
+
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
   m_musicTimeSeekBackward = -10;
@@ -894,6 +900,20 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetFloat(pElement, "decoderstreambuffer", m_videoDecoderStreamBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderminimumbuffer", m_videoDecoderMinimumBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderminimumstreambuffer", m_videoDecoderMinimumStreamBuffer, 0.0f, 100.0f);
+  }
+
+  pElement = pRootElement->FirstChildElement("blurayisocache");
+  if (pElement)
+  {
+    XMLUtils::GetUInt(pElement, "pagesize", m_blurayIsoCachePageSize, 2048, 1024 * 1024);
+    XMLUtils::GetUInt(pElement, "maxbytes", m_blurayIsoCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
+  }
+
+  pElement = pRootElement->FirstChildElement("curlfurlrucache");
+  if (pElement)
+  {
+    XMLUtils::GetUInt(pElement, "blocksize", m_curlFileLRUCacheBlockSize, 4096, 16 * 1024 * 1024);
+    XMLUtils::GetUInt(pElement, "maxbytes", m_curlFileLRUCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");

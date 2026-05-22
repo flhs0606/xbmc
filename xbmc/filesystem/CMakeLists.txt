@@ -3,6 +3,8 @@ set(SOURCES AddonsDirectory.cpp
             CacheStrategy.cpp
             CircularCache.cpp
             CurlFile.cpp
+            CurlFileEngine.cpp
+            CurlFileLRUCache.cpp
             DAVCommon.cpp
             DAVDirectory.cpp
             DAVFile.cpp
@@ -64,6 +66,8 @@ set(HEADERS AddonsDirectory.h
             CacheStrategy.h
             CircularCache.h
             CurlFile.h
+            CurlFileEngine.h
+            CurlFileLRUCache.h
             DAVCommon.h
             DAVDirectory.h
             DAVFile.h
