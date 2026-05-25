@@ -2441,22 +2441,24 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     const double rate_duration = static_cast<double>(am_private->video_rate * DVD_TIME_BASE) / UNIT_FREQ;
     const double picture_duration = static_cast<double>(m_cur_pts - m_last_pts);
     const double duration_ratio = picture_duration / rate_duration;
-    const bool is_sel_25hz_interlaced = (((m_hints.codec == AV_CODEC_ID_VC1) ||
-                                          (m_hints.codec == AV_CODEC_ID_WMV3) ||
-                                          (m_hints.codec == AV_CODEC_ID_H264)) &&
+    const bool is_vc1wmv3 = (m_hints.codec == AV_CODEC_ID_VC1) ||
+                            (m_hints.codec == AV_CODEC_ID_WMV3);
+    const bool is_sel_codec = is_vc1wmv3 && !m_processInfo.GetVideoInterlaced();
+    const bool is_sel_25hz_interlaced = ((m_hints.codec == AV_CODEC_ID_H264) &&
                                          (m_processInfo.GetVideoFps() == 25.0f) &&
                                          m_processInfo.GetVideoInterlaced());
 
     if (m_last_pts == DVD_NOPTS_VALUE)
       videoPicture.iDuration = rate_duration;
     else if ((m_speed == DVD_PLAYSPEED_NORMAL) &&
-             !is_sel_25hz_interlaced &&             
+             (is_sel_codec || (!is_vc1wmv3 && !is_sel_25hz_interlaced)) &&
              (m_cur_pts < m_last_pts))
     {
       m_cur_pts = m_last_pts + rate_duration;
       videoPicture.iDuration = rate_duration;
     }
-    else if ((m_speed == DVD_PLAYSPEED_NORMAL) &&
+    else if (!is_vc1wmv3 &&
+             (m_speed == DVD_PLAYSPEED_NORMAL) &&
              ((duration_ratio < 0.2) || ((duration_ratio > 1.5) && (duration_ratio < 4.0))))
     {
       m_cur_pts = m_last_pts + rate_duration;

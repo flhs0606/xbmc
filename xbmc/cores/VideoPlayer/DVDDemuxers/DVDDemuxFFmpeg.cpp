@@ -1714,7 +1714,10 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 
           st->bInterlaced = true;
         }
-        else if (r_frame_rate.den && r_frame_rate.num && std::abs(static_cast<float>(r_frame_rate.num) / static_cast<float>(r_frame_rate.den) - 2.0f * fps) < 0.01f)
+        else if (r_frame_rate.den && r_frame_rate.num &&
+                 (pStream->codecpar->codec_id != AV_CODEC_ID_VC1) &&
+                 (pStream->codecpar->codec_id != AV_CODEC_ID_WMV3) &&
+                 std::abs(static_cast<float>(r_frame_rate.num) / static_cast<float>(r_frame_rate.den) - 2.0f * fps) < 0.01f)
         {
           st->iFpsRate  = r_frame_rate.num;
           st->iFpsScale = r_frame_rate.den;
