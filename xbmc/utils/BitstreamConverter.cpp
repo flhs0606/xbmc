@@ -1109,19 +1109,38 @@ void CBitstreamConverter::ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, u
 
 void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta) {
 
-  // Guard against corrupt NALs
+  // Corrupt / undersized NAL: pass through to the kernel decoder rather
+  // than silently dropping it. Dropping any SEI here can strip critical
+  // signalling such as alternative_transfer_characteristics (type 147)
+  // used by HLG streams, which would cause the decoder to fall back to
+  // the VUI BT.709 transfer and output SDR.
   if (nal_size < 9)
+  {
+    BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
     return;
-
-  // Only parse SEI types we actually extract: 4=HDR10+/HDRVivid, 137=MDCV, 144=CLL
-  uint8_t payloadType = buf[2];
-  if (payloadType != 4 && payloadType != 137 && payloadType != 144)
-    return;
-
-  bool copy = true;
+  }
 
   std::vector<uint8_t> clearBuf;
   auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(buf, nal_size, clearBuf);
+
+  // Fast-path: if this SEI NAL carries none of the payload types we actually
+  // process (4 = user_data_registered_itu_t_t35 for HDR10+ / HDR Vivid,
+  // 137 = mastering_display_colour_volume, 144 = content_light_level_info),
+  // pass it through unchanged. This skips the Extract* work while preserving
+  // every SEI the kernel decoder still needs - e.g. pic_timing (1),
+  // recovery_point (6), frame_field_info (45/168), time_code (136), and
+  // critically alternative_transfer_characteristics (147) for HLG.
+  const bool anyInteresting = std::any_of(messages.begin(), messages.end(),
+    [](const CHevcSei& s) {
+      return s.m_payloadType == 4 || s.m_payloadType == 137 || s.m_payloadType == 144;
+    });
+  if (!anyInteresting)
+  {
+    BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
+    return;
+  }
+
+  bool copy = true;
 
   bool updateMetadata = false;
 
