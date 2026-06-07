@@ -189,31 +189,46 @@ const std::optional<const Hdr10PlusMetadata> CHevcSei::ExtractHdr10Plus(
   return std::nullopt;
 }
 
+// Validates a User-Data-Registered ITU-T T.35 SEI payload as HDR Vivid
+// (CUVA 005.1:2022).  The reader is positioned at the start of the payload
+// on entry; on success the reader is left positioned right after the
+// system_start_code byte, ready to be rewound for full re-parse by
+// hdr_vivid_sei_to_metadata().  On failure the reader is in an
+// unspecified state.
+static bool IsHdrVividSeiPayload(CBitstreamReader& br, size_t payloadSize)
+{
+  // 8 (country) + 16 (provider) + 16 (oriented) + 8 (system_start_code)
+  if (payloadSize < 6)
+    return false;
+
+  const auto countryCode = br.ReadBits(8);
+  const auto providerCode = br.ReadBits(16);
+  const auto orientedCode = br.ReadBits(16);
+
+  if (countryCode != 0x26 || providerCode != 0x0004 || orientedCode != 0x0005)
+    return false;
+
+  const auto systemStartCode = br.ReadBits(8);
+  return systemStartCode >= 0x01 && systemStartCode <= 0x07;
+}
+
 const std::optional<const HdrVividMetadata> CHevcSei::ExtractHdrVivid(
   const std::vector<CHevcSei>& messages,
   const std::vector<uint8_t>& buf)
 {
   for (const CHevcSei& sei : messages)
   {
-    // User Data Registered ITU-T T.35
-    if (sei.m_payloadType == 4 && sei.m_payloadSize >= 8)
+    if (sei.m_payloadType == 4)
     {
       CBitstreamReader br(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-      const auto itu_t_t35_country_code = br.ReadBits(8);
-      const auto itu_t_t35_terminal_provider_code = br.ReadBits(16);
-      const auto itu_t_t35_terminal_provider_oriented_code = br.ReadBits(16);
-
-      // China, CUVA HDR Vivid (provider_code 0x0004, oriented_code 0x0005)
-      if (itu_t_t35_country_code == 0x26 &&
-          itu_t_t35_terminal_provider_code == 0x0004 &&
-          itu_t_t35_terminal_provider_oriented_code == 0x0005)
+      if (IsHdrVividSeiPayload(br, sei.m_payloadSize))
       {
-        const auto system_start_code = br.ReadBits(8);
-        if (system_start_code >= 0x01 && system_start_code <= 0x07)
-        {
-          CBitstreamReader br2(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-          return hdr_vivid_sei_to_metadata(br2);
-        }
+        // Re-parse the validated payload from the start.  This is one
+        // extra pass over the 6-byte T.35 + system_start_code header,
+        // but keeps the public hdr_vivid_sei_to_metadata contract
+        // (reader positioned at country_code) unchanged.
+        br.Rewind();
+        return hdr_vivid_sei_to_metadata(br);
       }
     }
   }
@@ -230,23 +245,13 @@ const std::vector<uint8_t> CHevcSei::RemoveHdrVividFromSeiNalu(const uint8_t* in
   const CHevcSei* vividSei = nullptr;
   for (const CHevcSei& sei : messages)
   {
-    if (sei.m_payloadType == 4 && sei.m_payloadSize >= 8)
+    if (sei.m_payloadType == 4)
     {
       CBitstreamReader br(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-      const auto country_code = br.ReadBits(8);
-      const auto provider_code = br.ReadBits(16);
-      const auto oriented_code = br.ReadBits(16);
-
-      // Must also validate system_start_code to avoid false positives
-      // on other CUVA T.35 payloads sharing the same provider/oriented codes.
-      if (country_code == 0x26 && provider_code == 0x0004 && oriented_code == 0x0005)
+      if (IsHdrVividSeiPayload(br, sei.m_payloadSize))
       {
-        const auto system_start_code = br.ReadBits(8);
-        if (system_start_code >= 0x01 && system_start_code <= 0x07)
-        {
-          vividSei = &sei;
-          break;
-        }
+        vividSei = &sei;
+        break;
       }
     }
   }

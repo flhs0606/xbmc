@@ -19,52 +19,17 @@
 #include "HDRVividConvert.h"
 
 #include "DoViRpuWriter.h"
-#include "HDR10PlusConvert.h"  // for nits_to_pq, cast_pq, clamp16, ST2084 constants
+#include "HDR10PlusConvert.h"  // nits_to_pq, cast_pq, clamp16, VdrDmData, operator==
 #include "utils/log.h"
 
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
-// ST2084 constants (re-declared for local use; matching HDR10PlusConvert.cpp)
-static constexpr double kSt2084YMax = 10000.0;
-static constexpr double kSt2084M1 = 2610.0 / 16384.0;
-static constexpr double kSt2084M2 = (2523.0 / 4096.0) * 128.0;
-static constexpr double kSt2084C1 = 3424.0 / 4096.0;
-static constexpr double kSt2084C2 = (2413.0 / 4096.0) * 32.0;
-static constexpr double kSt2084C3 = (2392.0 / 4096.0) * 32.0;
-
 // DoVi L1 clamp values
 static constexpr uint16_t kL1MaxPqMinValue = 2081;
 static constexpr uint16_t kL1MaxPqMaxValue = 4095;
 static constexpr uint16_t kL1AvgPqMinValue = 819;
-
-// ---------------------------------------------------------------------------
-// PQ conversion (inline duplicates of HDR10PlusConvert helpers, to avoid
-// exposing them in the header)
-// ---------------------------------------------------------------------------
-
-static double nits_to_pq_local(double nits)
-{
-  double y = nits / kSt2084YMax;
-  return std::pow(
-      (kSt2084C1 + kSt2084C2 * std::pow(y, kSt2084M1)) /
-          (1.0 + kSt2084C3 * std::pow(y, kSt2084M1)),
-      kSt2084M2);
-}
-
-static uint16_t cast_pq_local(double nits)
-{
-  return static_cast<uint16_t>(
-      std::round(nits_to_pq_local(nits) * 4095.0));
-}
-
-static uint16_t clamp16_local(uint16_t v, uint16_t lo, uint16_t hi)
-{
-  if (v < lo) return lo;
-  if (v > hi) return hi;
-  return v;
-}
 
 // ---------------------------------------------------------------------------
 // Vivid → VdrDmData
@@ -79,7 +44,7 @@ static uint16_t source_max_pq_from_mdcv(uint32_t maxLum)
     case 2000:  return 3388;
     case 4000:  return 3696;
     case 10000: return 4095;
-    default:    return cast_pq_local(static_cast<double>(maxLum));
+    default:    return cast_pq(static_cast<double>(maxLum));
   }
 }
 
@@ -94,9 +59,11 @@ static uint16_t source_min_pq_from_mdcv(uint32_t minLum)
   return 62;                     // 0.005 nits
 }
 
-// Cache the last RPU to avoid redundant generation
-static std::vector<uint8_t> s_lastVividRpu;
-static VdrDmData s_lastVividVdrDmData = {};
+// Cache the last RPU to avoid redundant generation.  thread_local because
+// the parser is called from the decoder thread and the cache must not race
+// with itself.
+static thread_local std::vector<uint8_t> s_lastVividRpu;
+static thread_local VdrDmData s_lastVividVdrDmData = {};
 
 // ---------------------------------------------------------------------------
 // Layer 1 helpers: MDCV mastering display peak → calibrated peak luminance
@@ -109,11 +76,8 @@ static VdrDmData s_lastVividVdrDmData = {};
  *   1. MDCV max_lum from container (mastering display peak – correct reference)
  *   2. 10000 nits (ST.2084 max — conservative upper-bound when MDCV is missing)
  */
-static double vivid_peak_nits(const HdrVividWindowParams& win,
-                              const HDRStaticMetadataInfo& hdrStatic)
+static double vivid_peak_nits(const HDRStaticMetadataInfo& hdrStatic)
 {
-  (void)win; // TM data intentionally not used for peakNits — see NOTE above
-
   // Primary: MDCV mastering display peak
   if (hdrStatic.max_lum > 0)
     return static_cast<double>(hdrStatic.max_lum);
@@ -138,7 +102,7 @@ std::vector<uint8_t> create_dovi_rpu_nalu_from_vivid(
   const HdrVividWindowParams& win = meta.params[0];
 
   // ── Layer 1: calibrated peak luminance (MDCV-first, TM fallback) ──
-  double peakNits = vivid_peak_nits(win, hdrStatic);
+  double peakNits = vivid_peak_nits(hdrStatic);
 
   // ── source_min_pq / source_max_pq (static per stream) ──
   uint16_t srcMinPq = source_min_pq_from_mdcv(hdrStatic.min_lum);
@@ -165,8 +129,8 @@ std::vector<uint8_t> create_dovi_rpu_nalu_from_vivid(
   // display black floor, not the per-frame content minimum.
   uint16_t minPq = source_min_pq_from_mdcv(hdrStatic.min_lum);
 
-  uint16_t maxPq = cast_pq_local(std::max(rawMaxNits, 1.0));
-  uint16_t avgPq = cast_pq_local(std::max(rawAvgNits, 0.0));
+  uint16_t maxPq = cast_pq(std::max(rawMaxNits, 1.0));
+  uint16_t avgPq = cast_pq(std::max(rawAvgNits, 0.0));
 
   // ── Scene-level TM intent → L1 bias ──
   //
@@ -192,7 +156,7 @@ std::vector<uint8_t> create_dovi_rpu_nalu_from_vivid(
       // m_b=0.0 → +0; m_b=0.65 → +300
       // Clamp ceiling = 2081 (max_pq floor), so min_pq never exceeds max_pq.
       int32_t mbBias = static_cast<int32_t>(m_b * 460.0);
-      minPq = clamp16_local(
+      minPq = clamp16(
           static_cast<uint16_t>(static_cast<int32_t>(minPq) + mbBias),
           0, kL1MaxPqMinValue);
 
@@ -205,9 +169,9 @@ std::vector<uint8_t> create_dovi_rpu_nalu_from_vivid(
   }
 
   // ── Final L1 clamping ──
-  maxPq = clamp16_local(maxPq, kL1MaxPqMinValue, kL1MaxPqMaxValue);
-  avgPq = clamp16_local(avgPq, kL1AvgPqMinValue,
-                        (maxPq > kL1AvgPqMinValue) ? maxPq - 1 : kL1AvgPqMinValue);
+  maxPq = clamp16(maxPq, kL1MaxPqMinValue, kL1MaxPqMaxValue);
+  avgPq = clamp16(avgPq, kL1AvgPqMinValue,
+                  (maxPq > kL1AvgPqMinValue) ? maxPq - 1 : kL1AvgPqMinValue);
 
   // ── Assemble VdrDmData ──
   VdrDmData vdr = {};
@@ -222,19 +186,7 @@ std::vector<uint8_t> create_dovi_rpu_nalu_from_vivid(
   vdr.max_frame_average_light_level = hdrStatic.max_fall;
 
   // ── Cached RPU generation ──
-  if (s_lastVividVdrDmData.source_min_pq != vdr.source_min_pq ||
-      s_lastVividVdrDmData.source_max_pq != vdr.source_max_pq ||
-      s_lastVividVdrDmData.min_pq != vdr.min_pq ||
-      s_lastVividVdrDmData.max_pq != vdr.max_pq ||
-      s_lastVividVdrDmData.avg_pq != vdr.avg_pq ||
-      s_lastVividVdrDmData.max_display_mastering_luminance !=
-          vdr.max_display_mastering_luminance ||
-      s_lastVividVdrDmData.min_display_mastering_luminance !=
-          vdr.min_display_mastering_luminance ||
-      s_lastVividVdrDmData.max_content_light_level !=
-          vdr.max_content_light_level ||
-      s_lastVividVdrDmData.max_frame_average_light_level !=
-          vdr.max_frame_average_light_level)
+  if (s_lastVividVdrDmData != vdr)
   {
     s_lastVividRpu = create_dovi_rpu_nalu(vdr);
     s_lastVividVdrDmData = vdr;

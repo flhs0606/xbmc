@@ -19,6 +19,7 @@ public:
   uint32_t   GetBits(int nbits);
   unsigned int Position() const { return m_posBits; }
   unsigned int AvailableBits() const { return length * 8 - m_posBits; }
+  void       Rewind() { m_posBits = 0; }
 
 private:
   const uint8_t *buffer, *start;
