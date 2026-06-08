@@ -364,6 +364,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
         int dualPriorityValue = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
         bool dualPriorityHdr10Plus = (dualPriorityValue == 1);
         bool dualPriorityHdrVivid  = (dualPriorityValue == 2);
+        // Strip Vivid metadata when the user disabled Vivid and Vivid does
+        // not have priority.  Used by both the DV and HDR10 paths below.
+        const bool vividDisabled =
+            (dualPriorityValue != 2) &&
+            settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE);
 
         if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
         {
@@ -382,8 +387,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
           // Global Vivid disable: strip Vivid metadata regardless of priority.
           // Only applies when Vivid does NOT have priority (dual_priority != 2).
-          if (dualPriorityValue != 2 &&
-              settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE))
+          if (vividDisabled)
           {
             CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - HDR Vivid is disabled; removing Vivid metadata if present.",
                       __MODULE_NAME__, __FUNCTION__);
@@ -447,8 +451,6 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
         // Check disable flag first — when disabled, strip all Vivid metadata
         // and degrade to plain HDR10.  This is only applicable when priority
         // is DV (0) or HDR10+ (1), i.e. Vivid does NOT have priority.
-        bool vividDisabled = (dualPriorityValue != 2) &&
-                             settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE);
         if (vividDisabled)
         {
           CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then metadata will be removed and content downgraded to HDR10.",

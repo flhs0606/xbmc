@@ -189,35 +189,59 @@ const std::optional<const Hdr10PlusMetadata> CHevcSei::ExtractHdr10Plus(
   return std::nullopt;
 }
 
+// Validates that a User-Data-Registered ITU-T T.35 SEI payload is HDR
+// Vivid (CUVA 005.1:2022).  The reader is positioned at the start of the
+// payload (itu_t_t35_country_code) on entry and is consumed by this call;
+// callers that need a full re-parse must construct a fresh reader.
+static bool IsHdrVividSeiPayload(CBitstreamReader& br, size_t payloadSize)
+{
+  // Minimum bytes needed to safely parse one window:
+  //   5  T.35 header (country + provider + oriented)
+  //   1  system_start_code
+  //   6  four 12-bit maxrgb values
+  //   1  tone_mapping_mode_flag
+  //   1  color_saturation_mapping_flag
+  // = 14 bytes total
+  if (payloadSize < 14)
+    return false;
+
+  const auto countryCode = br.ReadBits(8);
+  const auto providerCode = br.ReadBits(16);
+  const auto orientedCode = br.ReadBits(16);
+
+  if (countryCode != 0x26 || providerCode != 0x0004 || orientedCode != 0x0005)
+    return false;
+
+  const auto systemStartCode = br.ReadBits(8);
+  return systemStartCode >= 0x01 && systemStartCode <= 0x07;
+}
+
+// Returns the first HDR Vivid SEI in `messages`, or nullptr if none.
+// `payloadBuf` provides the buffer against which m_payloadOffset resolves.
+static const CHevcSei* FindHdrVividSeiMessage(const std::vector<CHevcSei>& messages,
+                                               const std::vector<uint8_t>& payloadBuf)
+{
+  for (const CHevcSei& sei : messages)
+  {
+    if (sei.m_payloadType == 4)
+    {
+      CBitstreamReader br(payloadBuf.data() + sei.m_payloadOffset, sei.m_payloadSize);
+      if (IsHdrVividSeiPayload(br, sei.m_payloadSize))
+        return &sei;
+    }
+  }
+  return nullptr;
+}
+
 const std::optional<const HdrVividMetadata> CHevcSei::ExtractHdrVivid(
   const std::vector<CHevcSei>& messages,
   const std::vector<uint8_t>& buf)
 {
-  for (const CHevcSei& sei : messages)
+  if (const CHevcSei* sei = FindHdrVividSeiMessage(messages, buf))
   {
-    // User Data Registered ITU-T T.35
-    if (sei.m_payloadType == 4 && sei.m_payloadSize >= 8)
-    {
-      CBitstreamReader br(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-      const auto itu_t_t35_country_code = br.ReadBits(8);
-      const auto itu_t_t35_terminal_provider_code = br.ReadBits(16);
-      const auto itu_t_t35_terminal_provider_oriented_code = br.ReadBits(16);
-
-      // China, CUVA HDR Vivid (provider_code 0x0004, oriented_code 0x0005)
-      if (itu_t_t35_country_code == 0x26 &&
-          itu_t_t35_terminal_provider_code == 0x0004 &&
-          itu_t_t35_terminal_provider_oriented_code == 0x0005)
-      {
-        const auto system_start_code = br.ReadBits(8);
-        if (system_start_code >= 0x01 && system_start_code <= 0x07)
-        {
-          CBitstreamReader br2(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-          return hdr_vivid_sei_to_metadata(br2);
-        }
-      }
-    }
+    CBitstreamReader br(buf.data() + sei->m_payloadOffset, sei->m_payloadSize);
+    return hdr_vivid_sei_to_metadata(br);
   }
-
   return std::nullopt;
 }
 
@@ -226,30 +250,7 @@ const std::vector<uint8_t> CHevcSei::RemoveHdrVividFromSeiNalu(const uint8_t* in
   std::vector<uint8_t> buf;
   std::vector<CHevcSei> messages = CHevcSei::ParseSeiRbspUnclearedEmulation(inData, inDataLen, buf);
 
-  // Find the HDR Vivid SEI message
-  const CHevcSei* vividSei = nullptr;
-  for (const CHevcSei& sei : messages)
-  {
-    if (sei.m_payloadType == 4 && sei.m_payloadSize >= 8)
-    {
-      CBitstreamReader br(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
-      const auto country_code = br.ReadBits(8);
-      const auto provider_code = br.ReadBits(16);
-      const auto oriented_code = br.ReadBits(16);
-
-      // Must also validate system_start_code to avoid false positives
-      // on other CUVA T.35 payloads sharing the same provider/oriented codes.
-      if (country_code == 0x26 && provider_code == 0x0004 && oriented_code == 0x0005)
-      {
-        const auto system_start_code = br.ReadBits(8);
-        if (system_start_code >= 0x01 && system_start_code <= 0x07)
-        {
-          vividSei = &sei;
-          break;
-        }
-      }
-    }
-  }
+  const CHevcSei* vividSei = FindHdrVividSeiMessage(messages, buf);
 
   if (!vividSei)
   {
