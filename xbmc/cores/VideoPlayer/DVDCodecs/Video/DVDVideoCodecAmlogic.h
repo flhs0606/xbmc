@@ -113,6 +113,7 @@ private:
   void ClearBitstreamCommon(void);
   void UpdateAppendCMv40SettingCache();
   void ApplyDynamicDoViSettings();
+  void PopFrontPackage();
 
   std::shared_ptr<CAMLVideoBufferPool> m_videoBufferPool;
   static std::atomic<bool> m_InstanceGuard;

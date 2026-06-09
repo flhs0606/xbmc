@@ -126,6 +126,17 @@ void SetDoviConfigRecordP7(AVDOVIDecoderConfigurationRecord& dovi)
   dovi.dv_bl_signal_compatibility_id = 6;
 }
 
+// Read AV_PKT_DATA_DOVI_CONF side data from `par` as a DoVi configuration
+// record, or nullptr if absent. Side data is owned by libavformat; do not free.
+const AVDOVIDecoderConfigurationRecord* GetStreamDoviConf(const AVCodecParameters* par)
+{
+  if (!par)
+    return nullptr;
+  const auto* sd =
+      av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
+  return sd ? reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sd->data) : nullptr;
+}
+
 // Some encoders mislabel HLG streams as AVCOL_TRC_BT2020_10 with BT.2020
 // primaries. This is the single source of truth: it is the only place that
 // recognises the "BT.2020-10 transfer + BT.2020 primaries" combination as
@@ -1830,13 +1841,11 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           if (streamIdx > 0 && IsDoViP7DualLayer())
             m_dv_dual_stream = true;
 
-          sideData =
-              av_packet_side_data_get(pStream->codecpar->coded_side_data,
-                                      pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
+          const auto* doviSideData = GetStreamDoviConf(pStream->codecpar);
 
-          if (!m_dv_dual_stream && sideData && sideData->size)
+          if (!m_dv_dual_stream && doviSideData)
           {
-            st->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
+            st->dovi = *doviSideData;
           }
           else // force dovi configuration for DV dual stream
           {
@@ -1848,9 +1857,8 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
               bl_video_stream->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
 
               // use dovi side data if available
-              if (sideData && sideData->size)
-                bl_video_stream->dovi =
-                    *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
+              if (doviSideData)
+                bl_video_stream->dovi = *doviSideData;
               // manual set dovi side data to P7
               else
               {
@@ -2820,26 +2828,49 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int& channels, int& samplerate) const
   }
 }
 
-// Dolby Vision Profile 7 dual-layer heuristic (BL + EL)
+// Dolby Vision Profile 7 dual-layer heuristic (BL + EL).
+//
+// Recognizes a stream as DoVi P7 dual-layer when there is a HEVC base
+// layer (BL) and a separate HEVC enhancement layer (EL) on different
+// streams of the same container. Works for:
+//
+//   * Blu-ray MPEG-TS: EL is identified by PID == HDMV_PID_VIDEO_EL
+//     (0x1015). The BL PID is the regular video PID.
+//   * MP4 dual-track: EL is identified by carrying AV_PKT_DATA_DOVI_CONF
+//     side data with dv_profile == 7 and el_present_flag set. The BL
+//     must NOT carry such side data — codec_tag alone is not used
+//     because the DV-unmarked base tags ('hev1'/'hvc1') are the normal
+//     BL tag and would cause false positives.
+//
+// Restricted to HEVC. AVC/VVC dual-track is intentionally out of scope.
 bool CDVDDemuxFFmpeg::IsDoViP7DualLayer() const
 {
   if ((m_pFormatContext == nullptr) || (m_pFormatContext->nb_streams < 2) ||
       (m_pFormatContext->streams == nullptr))
     return false;
 
-  // BL: index 0, HEVC video, PID != HDMV_PID_VIDEO_EL.
+  // BL: streams[0], HEVC video. Must NOT itself be a DoVi P7 enhancement.
   const AVStream* bl = m_pFormatContext->streams[0];
-  if (bl == nullptr || bl->codecpar == nullptr ||
+  if (!bl || !bl->codecpar ||
       bl->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
-      bl->codecpar->codec_id != AV_CODEC_ID_HEVC || bl->id == HDMV_PID_VIDEO_EL)
+      bl->codecpar->codec_id != AV_CODEC_ID_HEVC ||
+      GetStreamDoviConf(bl->codecpar))
     return false;
 
-  // EL: can be on any other stream index, HEVC video, PID == HDMV_PID_VIDEO_EL.
+  // EL: any other HEVC stream that is itself a DoVi P7 enhancement.
   for (unsigned int i = 1; i < m_pFormatContext->nb_streams; ++i)
   {
     const AVStream* el = m_pFormatContext->streams[i];
-    if (el && el->codecpar && el->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-        el->codecpar->codec_id == AV_CODEC_ID_HEVC && el->id == HDMV_PID_VIDEO_EL)
+    if (!el || !el->codecpar ||
+        el->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
+        el->codecpar->codec_id != AV_CODEC_ID_HEVC)
+      continue;
+    // Blu-ray path: EL identified by PID.
+    if (el->id == HDMV_PID_VIDEO_EL)
+      return true;
+    // MP4 path: EL identified by DV P7 side data.
+    const auto* dovi = GetStreamDoviConf(el->codecpar);
+    if (dovi && dovi->dv_profile == 7 && dovi->el_present_flag)
       return true;
   }
 
@@ -2850,9 +2881,7 @@ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
 {
   auto hdrType = StreamHdrType::HDR_TYPE_NONE;
 
-  if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
-                              pStream->codecpar->nb_coded_side_data,
-                              AV_PKT_DATA_DOVI_CONF) ||
+  if (GetStreamDoviConf(pStream->codecpar) ||
       (pStream->id == HDMV_PID_VIDEO_EL)) // DoVi
     hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
   else if (IsDoViP7DualLayer()) // DoVi P7 Dual Layer

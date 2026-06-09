@@ -571,17 +571,18 @@ void CDVDVideoCodecAmlogic::Close(void)
   m_opened = false;
 
   while (!m_packages.empty())
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
+    PopFrontPackage();
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
 
   if (m_bitstream)
     m_bitstream->ResetStartDecode();
+}
+
+void CDVDVideoCodecAmlogic::PopFrontPackage()
+{
+  KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
+  m_packages.pop_front();
 }
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
@@ -591,7 +592,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   uint8_t *pData(packet.pData);
   uint32_t iSize(packet.iSize);
-  int data_added = false;
+  bool data_added = false;
   bool dual_layer_converted = false;
   bool set_osd_max = false;
 
@@ -603,29 +604,30 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     {
       if (packet.isDualStream && aml_dolby_vision_enabled())
       {
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
-          packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
+        logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+          "{} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty",
+          packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize,
+          m_packages.empty() ? "is" : "is not");
 
         if (!m_packages.empty())
         {
-          // convert bl and el package to single package
+          // Pair the queued packet with the current one to form a BL+EL pair.
+          // Convert() takes the BL as the first argument; if the queued packet
+          // is BL and the new one is EL (or vice versa), swap so the call is
+          // uniform below.
           DLDemuxPacket dual_layer_packet = m_packages.front();
           auto const& [pDataBackup, iSizeBackup, isELPackageBackup, dts] = dual_layer_packet;
 
           if (isELPackageBackup != packet.isELPackage)
           {
-            if (packet.isELPackage)
-            {
-              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found DT-DL BL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
-                packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
-              dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize, packet.pts);
-            }
-            else
-            {
-              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: found DT-DL EL package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
-                packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
-              dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup, packet.pts);
-            }
+            uint8_t* pDataBl = packet.isELPackage ? pDataBackup : pData;
+            uint32_t iSizeBl = packet.isELPackage ? iSizeBackup : iSize;
+            uint8_t* pDataEl = packet.isELPackage ? pData : pDataBackup;
+            uint32_t iSizeEl = packet.isELPackage ? iSize : iSizeBackup;
+            logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+              "found DT-DL pair in list: bl size {}, el size {}, pts: {:.3f}",
+              iSizeBl, iSizeEl, packet.pts/DVD_TIME_BASE);
+            dual_layer_converted = m_bitstream->Convert(pDataBl, iSizeBl, pDataEl, iSizeEl, packet.pts);
           }
         }
 
@@ -635,7 +637,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
           m_packages.emplace_back(pDataBackup, iSize, packet.isELPackage, packet.dts);
-          CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+          logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+            "did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list",
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
           return true;
@@ -654,7 +657,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // software-level guard to avoid discarding pre-IDR access units.
       if (!dual_layer_converted && !m_bitstream->CanStartDecode())
       {
-        CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
+        logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
         return true;
       }
       pData = m_bitstream->GetConvertBuffer();
@@ -664,7 +667,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     {
       if (!m_bitparser->CanStartDecode(pData, iSize))
       {
-        CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitparser)", __FUNCTION__);
+        logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitparser)");
         return true;
       }
       else
@@ -692,12 +695,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   // pop package only from list if hardware decoder did accept the data
   if (data_added && dual_layer_converted)
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
+    PopFrontPackage();
 
   // Make change in luminance as late a possible to try and avoid starting change in luminance in menu.
   if (set_osd_max)
@@ -714,12 +712,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
   m_Codec->Reset();
 
   while (!m_packages.empty())
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
+    PopFrontPackage();
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
