@@ -655,7 +655,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // may start mid-GOP (e.g. ISO playlists with non-zero start PTS);
       // the hardware Amlogic decoder handles its own IDR wait — skip the
       // software-level guard to avoid discarding pre-IDR access units.
-      if (!dual_layer_converted && !m_bitstream->CanStartDecode())
+      if (!m_bitstream->CanStartDecode())
       {
         logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
         return true;
@@ -714,6 +714,14 @@ void CDVDVideoCodecAmlogic::Reset(void)
   while (!m_packages.empty())
     PopFrontPackage();
 
+  m_dvFelDropOutputFramesAfterReset = 0;
+  if (m_bitstream && m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+      m_hints.dovi_el_type == DOVIELType::TYPE_FEL)
+    m_dvFelDropOutputFramesAfterReset = 1;
+  CLog::Log(LOGDEBUG, "{} SEEK_DIAG dvFelDropOutputFrames={} hdr={} el={} bitstream={}",
+            __FUNCTION__, m_dvFelDropOutputFramesAfterReset, static_cast<int>(m_hints.hdrType),
+            static_cast<int>(m_hints.dovi_el_type), static_cast<bool>(m_bitstream));
+
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
   if (m_bitstream)
@@ -729,6 +737,25 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
 
   if (retVal == VC_PICTURE)
   {
+    // DV FEL seek: discard the first decoded output picture after reset.
+    // Keep the input BL/EL stream untouched; only delay renderer handoff by
+    // one hardware output so the dual-layer pipeline can settle.
+    if (m_dvFelDropOutputFramesAfterReset > 0)
+    {
+      m_dvFelDropOutputFramesAfterReset--;
+      CLog::Log(LOGDEBUG,
+                "{} SEEK_DIAG dropping DV FEL output frame remaining={} pts={:.3f} omxpts={:.3f} idx={}",
+                __FUNCTION__, m_dvFelDropOutputFramesAfterReset,
+                m_videobuffer.pts / DVD_TIME_BASE, m_Codec->GetPts() / DVD_TIME_BASE,
+                m_Codec->GetBufferIndex());
+      if (m_videobuffer.videoBuffer)
+      {
+        m_videobuffer.videoBuffer->Release();
+        m_videobuffer.videoBuffer = nullptr;
+      }
+      return VC_BUFFER;
+    }
+
     pVideoPicture->videoBuffer = nullptr;
     pVideoPicture->SetParams(m_videobuffer);
 

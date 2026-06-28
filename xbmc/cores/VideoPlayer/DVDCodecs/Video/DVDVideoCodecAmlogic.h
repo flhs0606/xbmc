@@ -124,4 +124,8 @@ private:
   DOVICMv40Mode m_appendCMv40ModeApplied{DOVICMv40Mode::CMV40_NONE};
   bool m_settingsCallbackRegistered{false};
 
+  // DV FEL seek: drop the first decoded output picture after reset so the
+  // hardware BL/EL pipelines can settle before renderer handoff.
+  int m_dvFelDropOutputFramesAfterReset{0};
+
 };
