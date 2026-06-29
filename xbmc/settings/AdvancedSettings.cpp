@@ -187,6 +187,8 @@ void CAdvancedSettings::Initialize()
   m_videoDecoderBuffer = 10.0f;
   m_videoDecoderStreamBuffer = 90.0f;
   m_videoDecoderMinimumBuffer = 10.0f;
+  m_videoFelSeekFix = true;
+  m_videoFelSeekFixThresholdFrames = 4;
 
   m_blurayIsoCachePageSize = 1024 * 1024;
   m_blurayIsoCacheMaxBytes = 128 * 1024 * 1024;
@@ -900,6 +902,9 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetFloat(pElement, "decoderstreambuffer", m_videoDecoderStreamBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderminimumbuffer", m_videoDecoderMinimumBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderminimumstreambuffer", m_videoDecoderMinimumStreamBuffer, 0.0f, 100.0f);
+    XMLUtils::GetBoolean(pElement, "felseekfix", m_videoFelSeekFix);
+    XMLUtils::GetInt(pElement, "felseekfixthresholdframes",
+                     m_videoFelSeekFixThresholdFrames, 1, 120);
   }
 
   pElement = pRootElement->FirstChildElement("blurayisocache");

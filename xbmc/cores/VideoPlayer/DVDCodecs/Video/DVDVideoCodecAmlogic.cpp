@@ -25,6 +25,23 @@
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
 
+namespace
+{
+constexpr int FEL_SEEK_FIX_DETECTION_PAIRS = 4;
+
+bool IsNoPts(double pts)
+{
+  return pts == DVD_NOPTS_VALUE;
+}
+
+double PacketTime(double pts, double dts)
+{
+  return !IsNoPts(pts) ? pts : dts;
+}
+
+
+} // namespace
+
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
 {
   CLog::Log(LOGDEBUG, "CAMLVideoBufferPool::~CAMLVideoBufferPool: Deleting {:d} buffers", static_cast<unsigned int>(m_videoBuffers.size()) );
@@ -127,6 +144,72 @@ void CDVDVideoCodecAmlogic::ApplyDynamicDoViSettings()
 
   logM(LOGINFO, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 append mode changed to [{:d}]",
        static_cast<int>(mode));
+}
+
+bool CDVDVideoCodecAmlogic::IsDvP7FelStream() const
+{
+  return m_bitstream && m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+         m_hints.dovi.dv_profile == 7 && m_hints.dovi_el_type == DOVIELType::TYPE_FEL;
+}
+
+CDVDVideoCodecAmlogic::FelSeekFixSettings CDVDVideoCodecAmlogic::GetFelSeekFixSettings() const
+{
+  FelSeekFixSettings settings;
+
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto advancedSettings = settingsComponent ? settingsComponent->GetAdvancedSettings() : nullptr;
+  if (!advancedSettings)
+    return settings;
+
+  settings.enabled = advancedSettings->m_videoFelSeekFix;
+  if (advancedSettings->m_videoFelSeekFixThresholdFrames > 0)
+    settings.thresholdFrames = advancedSettings->m_videoFelSeekFixThresholdFrames;
+
+  return settings;
+}
+
+bool CDVDVideoCodecAmlogic::CanRunFelSeekFixDetection() const
+{
+  return m_felSeekFixSettings.enabled && IsDvP7FelStream() &&
+         m_userConvertDoviMode == DOVIMode::MODE_NONE && !m_felSeekFixActive;
+}
+
+void CDVDVideoCodecAmlogic::ArmFelSeekFixDetection()
+{
+  m_felSeekFixDetectionPairsAfterReset = 0;
+  m_felSeekFixSettings = GetFelSeekFixSettings();
+
+  if (CanRunFelSeekFixDetection())
+    m_felSeekFixDetectionPairsAfterReset = FEL_SEEK_FIX_DETECTION_PAIRS;
+
+  CLog::Log(LOGDEBUG,
+            "{} FEL_SEEK_FIX detection armed: pairs={} enabled={} thresholdFrames={} userConvertDovi={} hdr={} profile={} el={} bitstream={}",
+            __FUNCTION__, m_felSeekFixDetectionPairsAfterReset, m_felSeekFixSettings.enabled,
+            m_felSeekFixSettings.thresholdFrames, static_cast<int>(m_userConvertDoviMode),
+            static_cast<int>(m_hints.hdrType), m_hints.dovi.dv_profile,
+            static_cast<int>(m_hints.dovi_el_type), static_cast<bool>(m_bitstream));
+}
+
+void CDVDVideoCodecAmlogic::EnableFelSeekFix(double ptsBl,
+                                             double dtsBl,
+                                             double ptsEl,
+                                             double dtsEl,
+                                             double timeDeltaMs,
+                                             double thresholdMs,
+                                             int pairsLeft)
+{
+  if (!CanRunFelSeekFixDetection())
+    return;
+
+  m_bitstream->SetConvertDovi(DOVIMode::MODE_TOMEL);
+  m_felSeekFixActive = true;
+  m_felSeekFixDetectionPairsAfterReset = 0;
+
+  CLog::Log(LOGINFO,
+            "CDVDVideoCodecAmlogic FEL_SEEK_FIX fallback enabled after {}: BL pts {:.3f} dts {:.3f}, EL pts {:.3f} dts {:.3f}, time-delta {:.3f} ms > threshold {:.3f} ms ({} frames), detectPairsLeft {}",
+            "seek", ptsBl / DVD_TIME_BASE, dtsBl / DVD_TIME_BASE, ptsEl / DVD_TIME_BASE,
+            dtsEl / DVD_TIME_BASE, timeDeltaMs, thresholdMs,
+            m_felSeekFixSettings.thresholdFrames, pairsLeft);
 }
 
 std::unique_ptr<CDVDVideoCodec> CDVDVideoCodecAmlogic::Create(CProcessInfo& processInfo)
@@ -427,12 +510,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
           if (m_hints.dovi.dv_profile == 7)
           {
-            DOVIMode convertDovi = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
-            if (convertDovi)
+            m_userConvertDoviMode = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
+            if (m_userConvertDoviMode != DOVIMode::MODE_NONE)
             {
               CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - user chooses to convert to mode [{:d}]",
-                        __MODULE_NAME__, __FUNCTION__, convertDovi);
-              m_bitstream->SetConvertDovi(convertDovi);
+                        __MODULE_NAME__, __FUNCTION__, static_cast<int>(m_userConvertDoviMode));
+              m_bitstream->SetConvertDovi(m_userConvertDoviMode);
             }
           }
         }
@@ -570,6 +653,11 @@ void CDVDVideoCodecAmlogic::Close(void)
 
   m_opened = false;
 
+  m_felSeekFixActive = false;
+  m_felSeekFixDetectionPairsAfterReset = 0;
+  m_felSeekFixSettings = FelSeekFixSettings{};
+  m_userConvertDoviMode = DOVIMode::MODE_NONE;
+
   while (!m_packages.empty())
     PopFrontPackage();
   m_mpeg2_sequence_pts = 0;
@@ -581,7 +669,7 @@ void CDVDVideoCodecAmlogic::Close(void)
 
 void CDVDVideoCodecAmlogic::PopFrontPackage()
 {
-  KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
+  KODI::MEMORY::AlignedFree(m_packages.front().data);
   m_packages.pop_front();
 }
 
@@ -595,6 +683,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   bool data_added = false;
   bool dual_layer_converted = false;
   bool set_osd_max = false;
+  double outputPts = packet.pts;
+  double outputDts = packet.dts;
 
   if (pData)
   {
@@ -615,19 +705,46 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           // Convert() takes the BL as the first argument; if the queued packet
           // is BL and the new one is EL (or vice versa), swap so the call is
           // uniform below.
-          DLDemuxPacket dual_layer_packet = m_packages.front();
-          auto const& [pDataBackup, iSizeBackup, isELPackageBackup, dts] = dual_layer_packet;
+          const DLDemuxPacket dualLayerPacket = m_packages.front();
 
-          if (isELPackageBackup != packet.isELPackage)
+          if (dualLayerPacket.isELPackage != packet.isELPackage)
           {
-            uint8_t* pDataBl = packet.isELPackage ? pDataBackup : pData;
-            uint32_t iSizeBl = packet.isELPackage ? iSizeBackup : iSize;
-            uint8_t* pDataEl = packet.isELPackage ? pData : pDataBackup;
-            uint32_t iSizeEl = packet.isELPackage ? iSize : iSizeBackup;
+            uint8_t* pDataBl = packet.isELPackage ? dualLayerPacket.data : pData;
+            uint32_t iSizeBl = packet.isELPackage ? dualLayerPacket.size : iSize;
+            uint8_t* pDataEl = packet.isELPackage ? pData : dualLayerPacket.data;
+            uint32_t iSizeEl = packet.isELPackage ? iSize : dualLayerPacket.size;
+            const double ptsBl = packet.isELPackage ? dualLayerPacket.pts : packet.pts;
+            const double dtsBl = packet.isELPackage ? dualLayerPacket.dts : packet.dts;
+            const double ptsEl = packet.isELPackage ? packet.pts : dualLayerPacket.pts;
+            const double dtsEl = packet.isELPackage ? packet.dts : dualLayerPacket.dts;
+            const double timeBl = PacketTime(ptsBl, dtsBl);
+            const double timeEl = PacketTime(ptsEl, dtsEl);
+            if (m_felSeekFixDetectionPairsAfterReset > 0 && CanRunFelSeekFixDetection())
+            {
+              const bool hasValidTimes = !IsNoPts(timeBl) && !IsNoPts(timeEl);
+              const double timeDelta = hasValidTimes ? fabs(timeBl - timeEl) : 0.0;
+              const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+                                     ? static_cast<double>(m_hints.fpsrate) / m_hints.fpsscale
+                                     : 24000.0 / 1001.0;
+              const int thresholdFrames = m_felSeekFixSettings.thresholdFrames;
+              const double staleElThreshold = DVD_TIME_BASE * static_cast<double>(thresholdFrames) / fps;
+
+              m_felSeekFixDetectionPairsAfterReset--;
+              if (hasValidTimes && timeDelta > staleElThreshold)
+                EnableFelSeekFix(ptsBl, dtsBl, ptsEl, dtsEl, DVD_TIME_TO_MSEC(timeDelta),
+                                 DVD_TIME_TO_MSEC(staleElThreshold),
+                                 m_felSeekFixDetectionPairsAfterReset);
+              else if (m_felSeekFixDetectionPairsAfterReset == 0)
+                CLog::Log(LOGDEBUG,
+                          "CDVDVideoCodecAmlogic FEL_SEEK_FIX detection window closed without fallback");
+            }
+
+            outputPts = !IsNoPts(ptsBl) ? ptsBl : packet.pts;
+            outputDts = !IsNoPts(dtsBl) ? dtsBl : packet.dts;
             logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
               "found DT-DL pair in list: bl size {}, el size {}, pts: {:.3f}",
-              iSizeBl, iSizeEl, packet.pts/DVD_TIME_BASE);
-            dual_layer_converted = m_bitstream->Convert(pDataBl, iSizeBl, pDataEl, iSizeEl, packet.pts);
+              iSizeBl, iSizeEl, outputPts/DVD_TIME_BASE);
+            dual_layer_converted = m_bitstream->Convert(pDataBl, iSizeBl, pDataEl, iSizeEl, outputPts);
           }
         }
 
@@ -636,7 +753,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.emplace_back(pDataBackup, iSize, packet.isELPackage, packet.dts);
+          m_packages.push_back({pDataBackup, iSize, packet.isELPackage, packet.dts, packet.pts});
           logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
             "did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list",
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
@@ -655,7 +772,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       // may start mid-GOP (e.g. ISO playlists with non-zero start PTS);
       // the hardware Amlogic decoder handles its own IDR wait — skip the
       // software-level guard to avoid discarding pre-IDR access units.
-      if (!dual_layer_converted && !m_bitstream->CanStartDecode())
+      if (!m_bitstream->CanStartDecode() && !dual_layer_converted)
       {
         logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
         return true;
@@ -673,11 +790,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       else
         m_has_keyframe = true;
     }
-    FrameRateTracking( pData, iSize, packet.dts, packet.pts);
+    FrameRateTracking( pData, iSize, outputDts, outputPts);
 
     if (!m_opened)
     {
-      if (packet.pts == DVD_NOPTS_VALUE)
+      if (outputPts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
@@ -691,7 +808,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+  data_added = m_Codec->AddData(pData, iSize, outputDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : outputPts);
 
   // pop package only from list if hardware decoder did accept the data
   if (data_added && dual_layer_converted)
@@ -713,6 +830,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
 
   while (!m_packages.empty())
     PopFrontPackage();
+
+  ArmFelSeekFixDetection();
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;

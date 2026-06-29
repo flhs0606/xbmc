@@ -29,7 +29,14 @@ class CSetting;
 
 class CDVDVideoCodecAmlogic;
 
-typedef std::tuple<uint8_t*, uint32_t, bool, double> DLDemuxPacket;
+struct DLDemuxPacket
+{
+  uint8_t* data;
+  uint32_t size;
+  bool isELPackage;
+  double dts;
+  double pts;
+};
 
 class CAMLVideoBuffer : public CVideoBuffer
 {
@@ -110,10 +117,29 @@ protected:
   std::unique_ptr<CBitstreamParser>    m_bitparser;
   std::unique_ptr<CBitstreamConverter> m_bitstream;
 private:
+  static constexpr int FEL_SEEK_FIX_DEFAULT_THRESHOLD_FRAMES = 4;
+
+  struct FelSeekFixSettings
+  {
+    bool enabled{true};
+    int thresholdFrames{FEL_SEEK_FIX_DEFAULT_THRESHOLD_FRAMES};
+  };
+
   void ClearBitstreamCommon(void);
   void UpdateAppendCMv40SettingCache();
   void ApplyDynamicDoViSettings();
   void PopFrontPackage();
+  bool IsDvP7FelStream() const;
+  FelSeekFixSettings GetFelSeekFixSettings() const;
+  bool CanRunFelSeekFixDetection() const;
+  void ArmFelSeekFixDetection();
+  void EnableFelSeekFix(double ptsBl,
+                        double dtsBl,
+                        double ptsEl,
+                        double dtsEl,
+                        double timeDeltaMs,
+                        double thresholdMs,
+                        int pairsLeft);
 
   std::shared_ptr<CAMLVideoBufferPool> m_videoBufferPool;
   static std::atomic<bool> m_InstanceGuard;
@@ -123,5 +149,11 @@ private:
   std::atomic<int> m_appendCMv40ModeSetting{static_cast<int>(DOVICMv40Mode::CMV40_NONE)};
   DOVICMv40Mode m_appendCMv40ModeApplied{DOVICMv40Mode::CMV40_NONE};
   bool m_settingsCallbackRegistered{false};
+
+  // DV FEL seek/resume: FEL seek fix fallback to MEL if BL/EL timing is badly mismatched.
+  DOVIMode m_userConvertDoviMode{DOVIMode::MODE_NONE};
+  FelSeekFixSettings m_felSeekFixSettings;
+  bool m_felSeekFixActive{false};
+  int m_felSeekFixDetectionPairsAfterReset{0};
 
 };
