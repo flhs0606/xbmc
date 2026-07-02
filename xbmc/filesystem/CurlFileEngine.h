@@ -11,6 +11,7 @@
 #include "IFile.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +36,6 @@ namespace XFILE
  * Features:
  * - Background worker thread with RingBuffer for continuous prefetch
  * - Global LRU block cache (CCurlFileLRUCache) shared across file instances
- * - ISO-first-read tail-block parallel prefetch (UDF filesystem table)
  * - Deferred close: worker stays alive ~200ms for rapid open/close cycles
  * - Transparent 302 redirect handling with effective URL tracking
  * - Cross-domain credential protection for redirected URLs
@@ -83,11 +83,18 @@ private:
   static std::string ExtractHost(const std::string& url);
   static bool EqualsNoCase(const std::string& a, const std::string& b);
 
-  void UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& originalUrl, const char* ctx);
+  void UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& originalUrl);
   void SetupBaseCurlOptions(CURL_HANDLE* curl, const std::string& targetUrl);
   void SetupStatHeadOptions(CURL_HANDLE* curl, const std::string& targetUrl);
   void SetupWorkerDownloadOptions(CURL_HANDLE* curl, const std::string& targetUrl, int64_t start);
   bool DownloadRange(CURL_HANDLE* curl, int64_t start, int64_t length, std::vector<uint8_t>& buf);
+  void LogStats(const char* reason);
+  // Signal the worker to stop (sets flags + notifies cv) WITHOUT joining the
+  // thread. The worker may be blocked in curl_easy_perform with its own
+  // timeout; join on the call site would stall the caller for that long.
+  // Use StopWorker() (which calls RequestStopWorker + joins) on shutdown.
+  void RequestStopWorker();
+  void InvalidateCdnAndFallBackToSource();
 
   // --- Parse Kodi URL protocol options (after '|') ---
   void ParseProtocolOptions(const CURL& url);
@@ -125,7 +132,6 @@ private:
   bool m_isIso = false;
   bool m_isDirectory = false;
   bool m_supportRange = true;
-  bool m_isFirstRead = true;
   int64_t m_totalSize = 0;
   int64_t m_logicalPos = 0;
   time_t m_modTime = 0;
@@ -140,6 +146,7 @@ private:
   std::atomic<int64_t> m_resetTargetPos{0};
   std::atomic<int64_t> m_downloadPos{0};
   std::atomic<int> m_cdnFallbackCount{0};     // CDN→original URL fallback guard counter
+  std::chrono::steady_clock::time_point m_lastDiag{}; // Throttle for Read() wait-loop heartbeat (per-instance)
 
   // RingBuffer
   std::vector<uint8_t> m_ringBuffer;
@@ -159,6 +166,15 @@ private:
   long m_netReadTimeoutSec = 20;
   long m_netRangeTotalTimeoutSec = 20;
   int m_netMaxRetries = 5;
+
+  std::atomic<uint64_t> m_readRequests{0};
+  std::atomic<uint64_t> m_requestedBytes{0};
+  std::atomic<uint64_t> m_lruHits{0};
+  std::atomic<uint64_t> m_lruMisses{0};
+  std::atomic<uint64_t> m_lruStores{0};
+  std::atomic<uint64_t> m_workerStarts{0};
+  std::atomic<uint64_t> m_workerResets{0};
+  std::atomic<uint64_t> m_downloadRangeRequests{0};
 };
 
 } // namespace XFILE

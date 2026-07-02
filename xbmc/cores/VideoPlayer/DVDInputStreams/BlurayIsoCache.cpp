@@ -22,17 +22,17 @@ constexpr const char* LOG_TAG = "CBlurayIsoCache";
 CBlurayIsoCache::CBlurayIsoCache(int64_t sourceLength, ReadCallback readCallback, Config config)
   : m_config(std::move(config)), m_readCallback(std::move(readCallback)), m_sourceLength(sourceLength)
 {
-  if (m_config.pageSize < BLOCK_SIZE)
-    m_config.pageSize = BLOCK_SIZE;
+  if (m_config.blockSize < BLURAY_SECTOR_SIZE)
+    m_config.blockSize = BLURAY_SECTOR_SIZE;
 
-  const size_t remainder = m_config.pageSize % BLOCK_SIZE;
+  const size_t remainder = m_config.blockSize % BLURAY_SECTOR_SIZE;
   if (remainder != 0)
-    m_config.pageSize += BLOCK_SIZE - remainder;
+    m_config.blockSize += BLURAY_SECTOR_SIZE - remainder;
 
-  if (m_config.maxBytes < m_config.pageSize)
-    m_config.maxBytes = m_config.pageSize;
+  if (m_config.maxBytes < m_config.blockSize)
+    m_config.maxBytes = m_config.blockSize;
 
-  m_maxPages = std::max<size_t>(1, m_config.maxBytes / m_config.pageSize);
+  m_maxBlocks = std::max<size_t>(1, m_config.maxBytes / m_config.blockSize);
 }
 
 CBlurayIsoCache::~CBlurayIsoCache()
@@ -54,15 +54,21 @@ void CBlurayIsoCache::Start()
   m_started = true;
 
   CLog::Log(LOGDEBUG,
-            "{}::{} - cache config pageSize={} maxBytes={} maxPages={}",
-            LOG_TAG, __FUNCTION__, m_config.pageSize, m_config.maxBytes, m_maxPages);
+            "{}::{} - cache config blockSize={} maxBytes={} maxBlocks={}",
+            LOG_TAG, __FUNCTION__, m_config.blockSize, m_config.maxBytes, m_maxBlocks);
 
-  CLog::Log(LOGINFO, "{}::{} - Bluray ISO cache started for {} bytes source",
+  CLog::Log(LOGDEBUG, "{}::{} - Bluray ISO cache started for {} bytes source",
             LOG_TAG, __FUNCTION__, m_sourceLength);
 
   // Launch burst prefetch background thread
   m_prefetchRunning = true;
   m_prefetchThread = std::thread(&CBlurayIsoCache::PrefetchWorker, this);
+
+  // Conservative warmup for common UDF/BD metadata near the ISO tail. Keep this small so
+  // foreground reads can still take over quickly on high-latency network filesystems.
+  const int64_t maxBlock = GetMaxBlockIndex();
+  if (maxBlock >= 0)
+    SchedulePrefetch(std::max<int64_t>(0, maxBlock - WARMUP_TAIL + 1), maxBlock);
 }
 
 void CBlurayIsoCache::Stop()
@@ -71,7 +77,7 @@ void CBlurayIsoCache::Stop()
   {
     {
       std::lock_guard<std::mutex> lk(m_prefetchMutex);
-      m_prefetchPending.clear();
+      m_prefetchQueue.clear();
     }
     m_prefetchCv.notify_one();
     if (m_prefetchThread.joinable())
@@ -83,7 +89,7 @@ void CBlurayIsoCache::Stop()
 
   {
     std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
-    m_pages.clear();
+    m_blocks.clear();
     m_lruOrder.clear();
   }
 
@@ -98,83 +104,85 @@ int CBlurayIsoCache::ReadBlocks(uint8_t* buffer, int lba, int numBlocks)
   ++m_readRequests;
   m_requestedBlocks += static_cast<uint64_t>(numBlocks);
 
-  const int64_t offset = static_cast<int64_t>(lba) * BLOCK_SIZE;
-  const int64_t requestedBytes = static_cast<int64_t>(numBlocks) * BLOCK_SIZE;
+  const int64_t offset = static_cast<int64_t>(lba) * BLURAY_SECTOR_SIZE;
+  const int64_t requestedBytes = static_cast<int64_t>(numBlocks) * BLURAY_SECTOR_SIZE;
   if (offset < 0 || requestedBytes <= 0 || offset >= m_sourceLength)
     return -1;
 
   const int64_t availableBytes = std::min<int64_t>(requestedBytes, m_sourceLength - offset);
 
-  const int64_t firstPage = offset / static_cast<int64_t>(m_config.pageSize);
-  const int64_t lastPage = (offset + availableBytes - 1) / static_cast<int64_t>(m_config.pageSize);
+  const int64_t firstBlock = offset / static_cast<int64_t>(m_config.blockSize);
+  const int64_t lastBlock = (offset + availableBytes - 1) / static_cast<int64_t>(m_config.blockSize);
+
+  TrackDemandRead(firstBlock, lastBlock);
 
   int64_t copied = 0;
-  for (int64_t pageIndex = firstPage; pageIndex <= lastPage; ++pageIndex)
+  for (int64_t blockIndex = firstBlock; blockIndex <= lastBlock; ++blockIndex)
   {
-    PagePtr page = GetPage(pageIndex);
-    if (!page)
+    BlockPtr block = GetBlock(blockIndex);
+    if (!block)
     {
-      ++m_pageMisses;
-      page = LoadPage(pageIndex);
+      ++m_blockMisses;
+      block = LoadBlock(blockIndex);
     }
     else
-      ++m_pageHits;
+      ++m_blockHits;
 
-    if (!page)
-      return copied > 0 ? static_cast<int>(copied / BLOCK_SIZE) : -1;
+    if (!block)
+      return copied > 0 ? static_cast<int>(copied / BLURAY_SECTOR_SIZE) : -1;
 
-    const int64_t pageStart = pageIndex * static_cast<int64_t>(m_config.pageSize);
-    const int64_t copyStart = std::max<int64_t>(offset, pageStart);
+    const int64_t blockStart = blockIndex * static_cast<int64_t>(m_config.blockSize);
+    const int64_t copyStart = std::max<int64_t>(offset, blockStart);
     const int64_t copyEnd = std::min<int64_t>(offset + availableBytes,
-                                              pageStart + static_cast<int64_t>(page->validBytes));
+                                              blockStart + static_cast<int64_t>(block->validBytes));
     if (copyEnd <= copyStart)
       break;
 
-    const size_t pageOffset = static_cast<size_t>(copyStart - pageStart);
+    const size_t blockOffset = static_cast<size_t>(copyStart - blockStart);
     const size_t chunk = static_cast<size_t>(copyEnd - copyStart);
-    std::memcpy(buffer + copied, page->data.data() + pageOffset, chunk);
+    std::memcpy(buffer + copied, block->data.data() + blockOffset, chunk);
     copied += static_cast<int64_t>(chunk);
   }
 
   if (copied <= 0)
     return -1;
 
-  // ★ Burst prefetch: warm cache with next BURST_AHEAD pages
+  // ★ Burst prefetch: warm cache with next BURST_AHEAD blocks
   // Avoids serial NFS round-trips for subsequent sequential reads.
   if (m_prefetchRunning.load(std::memory_order_acquire))
   {
-    const int64_t pfStart = lastPage + 1;
-    const int64_t pfEnd = std::min<int64_t>(lastPage + BURST_AHEAD, GetMaxPageIndex());
+    const int64_t pfStart = lastBlock + 1;
+    const int64_t pfEnd = std::min<int64_t>(lastBlock + BURST_AHEAD, GetMaxBlockIndex());
     if (pfStart <= pfEnd)
       SchedulePrefetch(pfStart, pfEnd);
   }
 
-  return static_cast<int>(copied / BLOCK_SIZE);
+  return static_cast<int>(copied / BLURAY_SECTOR_SIZE);
 }
 
-CBlurayIsoCache::PagePtr CBlurayIsoCache::GetPage(int64_t pageIndex)
+CBlurayIsoCache::BlockPtr CBlurayIsoCache::GetBlock(int64_t blockIndex)
 {
   std::lock_guard<std::mutex> lock(m_cacheMutex);
-  auto it = m_pages.find(pageIndex);
-  if (it == m_pages.end())
+  auto it = m_blocks.find(blockIndex);
+  if (it == m_blocks.end())
     return nullptr;
 
-  TouchPageUnlocked(it);
-  return it->second.page;
+  TouchBlockUnlocked(it);
+  return it->second.block;
 }
 
-CBlurayIsoCache::PagePtr CBlurayIsoCache::LoadPage(int64_t pageIndex)
+CBlurayIsoCache::BlockPtr CBlurayIsoCache::ReadBlock(int64_t blockIndex)
 {
-  if (!IsValidPageIndex(pageIndex) || !m_readCallback)
+  if (!IsValidBlockIndex(blockIndex) || !m_readCallback)
     return nullptr;
 
-  auto page = std::make_shared<Page>();
-  page->data.resize(m_config.pageSize);
+  auto block = std::make_shared<Block>();
+  block->data.resize(m_config.blockSize);
 
-  const int64_t offset = pageIndex * static_cast<int64_t>(m_config.pageSize);
+  const int64_t offset = blockIndex * static_cast<int64_t>(m_config.blockSize);
   const size_t bytesToRead = static_cast<size_t>(
-      std::min<int64_t>(static_cast<int64_t>(m_config.pageSize), m_sourceLength - offset));
-  const int64_t bytesRead = m_readCallback(offset, page->data.data(), bytesToRead);
+      std::min<int64_t>(static_cast<int64_t>(m_config.blockSize), m_sourceLength - offset));
+  const int64_t bytesRead = m_readCallback(offset, block->data.data(), bytesToRead);
   if (bytesRead <= 0)
     return nullptr;
 
@@ -185,33 +193,42 @@ CBlurayIsoCache::PagePtr CBlurayIsoCache::LoadPage(int64_t pageIndex)
     return nullptr;
   }
 
-  page->validBytes = static_cast<size_t>(bytesRead);
-  InsertPage(pageIndex, page);
-  ++m_syncPageLoads;
-
-  return page;
+  block->validBytes = static_cast<size_t>(bytesRead);
+  return block;
 }
 
-void CBlurayIsoCache::InsertPage(int64_t pageIndex, PagePtr page)
+CBlurayIsoCache::BlockPtr CBlurayIsoCache::LoadBlock(int64_t blockIndex)
 {
-  if (!page)
+  auto block = ReadBlock(blockIndex);
+  if (!block)
+    return nullptr;
+
+  InsertBlock(blockIndex, block);
+  ++m_syncBlockLoads;
+
+  return block;
+}
+
+void CBlurayIsoCache::InsertBlock(int64_t blockIndex, BlockPtr block)
+{
+  if (!block)
     return;
 
   std::lock_guard<std::mutex> lock(m_cacheMutex);
-  auto it = m_pages.find(pageIndex);
-  if (it != m_pages.end())
+  auto it = m_blocks.find(blockIndex);
+  if (it != m_blocks.end())
   {
-    it->second.page = std::move(page);
-    TouchPageUnlocked(it);
+    it->second.block = std::move(block);
+    TouchBlockUnlocked(it);
     return;
   }
 
-  m_lruOrder.push_front(pageIndex);
-  m_pages.emplace(pageIndex, CacheSlot{m_lruOrder.begin(), std::move(page)});
+  m_lruOrder.push_front(blockIndex);
+  m_blocks.emplace(blockIndex, CacheSlot{m_lruOrder.begin(), std::move(block)});
   TrimUnlocked();
 }
 
-void CBlurayIsoCache::TouchPageUnlocked(std::unordered_map<int64_t, CacheSlot>::iterator it)
+void CBlurayIsoCache::TouchBlockUnlocked(std::unordered_map<int64_t, CacheSlot>::iterator it)
 {
   if (it->second.lruIt != m_lruOrder.begin())
     m_lruOrder.splice(m_lruOrder.begin(), m_lruOrder, it->second.lruIt);
@@ -220,66 +237,105 @@ void CBlurayIsoCache::TouchPageUnlocked(std::unordered_map<int64_t, CacheSlot>::
 
 void CBlurayIsoCache::TrimUnlocked()
 {
-  while (m_pages.size() > m_maxPages && !m_lruOrder.empty())
+  while (m_blocks.size() > m_maxBlocks && !m_lruOrder.empty())
   {
-    const int64_t pageIndex = m_lruOrder.back();
+    const int64_t blockIndex = m_lruOrder.back();
     m_lruOrder.pop_back();
-    m_pages.erase(pageIndex);
+    m_blocks.erase(blockIndex);
     ++m_evictions;
   }
 }
 
 void CBlurayIsoCache::LogStats(const char* reason)
 {
-  size_t cachedPages = 0;
+  size_t cachedBlocks = 0;
   {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
-    cachedPages = m_pages.size();
+    cachedBlocks = m_blocks.size();
   }
 
   CLog::Log(LOGDEBUG,
-            "{}::{} - {} detail: reads={} reqBlocks={} pageHits={} misses={} syncLoads={} evicts={} prefetchLoads={} pages={}",
+            "{}::{} - {} detail: reads={} reqBlocks={} blockHits={} misses={} syncLoads={} evicts={} prefetchLoads={} prefetchInvalidations={} staleDiscards={} blocks={}",
             LOG_TAG, __FUNCTION__, reason, m_readRequests.load(), m_requestedBlocks.load(),
-            m_pageHits.load(), m_pageMisses.load(), m_syncPageLoads.load(),
-            m_evictions.load(), m_prefetchPageLoads.load(), cachedPages);
-
-  CLog::Log(LOGINFO,
-            "{}::{} - {}: {} reads, {} pageHits / {} pageMisses, {} prefetchLoads, {} evicts",
-            LOG_TAG, __FUNCTION__, reason,
-            m_readRequests.load(), m_pageHits.load(), m_pageMisses.load(),
-            m_prefetchPageLoads.load(), m_evictions.load());
+            m_blockHits.load(), m_blockMisses.load(), m_syncBlockLoads.load(),
+            m_evictions.load(), m_prefetchBlockLoads.load(), m_prefetchInvalidations.load(),
+            m_prefetchStaleDiscards.load(), cachedBlocks);
 }
 
-bool CBlurayIsoCache::IsValidPageIndex(int64_t pageIndex) const
+bool CBlurayIsoCache::IsValidBlockIndex(int64_t blockIndex) const
 {
-  return pageIndex >= 0 && pageIndex <= GetMaxPageIndex();
+  return blockIndex >= 0 && blockIndex <= GetMaxBlockIndex();
 }
 
-int64_t CBlurayIsoCache::GetMaxPageIndex() const
+int64_t CBlurayIsoCache::GetMaxBlockIndex() const
 {
   if (m_sourceLength <= 0)
     return -1;
-  return (m_sourceLength - 1) / static_cast<int64_t>(m_config.pageSize);
+  return (m_sourceLength - 1) / static_cast<int64_t>(m_config.blockSize);
 }
 
-void CBlurayIsoCache::SchedulePrefetch(int64_t fromPage, int64_t toPage)
+void CBlurayIsoCache::ResetPrefetchLocked()
 {
-  // Deduplicate: only queue pages not yet in cache or already pending
+  ++m_prefetchGeneration;
+  m_prefetchQueue.clear();
+  ++m_prefetchInvalidations;
+}
+
+bool CBlurayIsoCache::IsPrefetchGenerationStale(uint64_t generation)
+{
   std::lock_guard<std::mutex> lk(m_prefetchMutex);
-  for (int64_t p = fromPage; p <= toPage; ++p)
+  if (generation == m_prefetchGeneration)
+    return false;
+
+  ++m_prefetchStaleDiscards;
+  return true;
+}
+
+void CBlurayIsoCache::TrackDemandRead(int64_t firstBlock, int64_t lastBlock)
+{
+  std::lock_guard<std::mutex> lk(m_prefetchMutex);
+
+  if (m_lastDemandRange)
   {
-    if (!IsValidPageIndex(p))
+    const auto& [lastFirstBlock, lastLastBlock] = *m_lastDemandRange;
+    if (firstBlock + DISCONTINUITY_BEHIND < lastFirstBlock ||
+        firstBlock > lastLastBlock + DISCONTINUITY_AHEAD)
+      ResetPrefetchLocked();
+  }
+
+  m_lastDemandRange = std::make_pair(firstBlock, lastBlock);
+}
+
+void CBlurayIsoCache::NotifySeek()
+{
+  {
+    std::lock_guard<std::mutex> lk(m_prefetchMutex);
+    ResetPrefetchLocked();
+    m_lastDemandRange.reset();
+  }
+  m_prefetchCv.notify_one();
+}
+
+void CBlurayIsoCache::SchedulePrefetch(int64_t fromBlock, int64_t toBlock)
+{
+  // Deduplicate: only queue blocks not yet in cache or already pending.
+  std::lock_guard<std::mutex> lk(m_prefetchMutex);
+  for (int64_t p = fromBlock; p <= toBlock; ++p)
+  {
+    if (!IsValidBlockIndex(p))
       break;
 
     // Quick check: skip if already in cache (avoids wasted prefetch)
     {
       std::lock_guard<std::mutex> clk(m_cacheMutex);
-      if (m_pages.count(p))
+      if (m_blocks.count(p))
         continue;
     }
-    m_prefetchPending.insert(p);
+
+    if (std::find(m_prefetchQueue.begin(), m_prefetchQueue.end(), p) == m_prefetchQueue.end())
+      m_prefetchQueue.push_back(p);
   }
-  if (!m_prefetchPending.empty())
+  if (!m_prefetchQueue.empty())
     m_prefetchCv.notify_one();
 }
 
@@ -289,36 +345,46 @@ void CBlurayIsoCache::PrefetchWorker()
 
   while (m_prefetchRunning.load(std::memory_order_acquire))
   {
-    int64_t pageIndex = -1;
+    int64_t blockIndex = -1;
+    uint64_t generation = 0;
     {
       std::unique_lock<std::mutex> lk(m_prefetchMutex);
       m_prefetchCv.wait(lk, [this] {
-        return !m_prefetchPending.empty() || !m_prefetchRunning.load(std::memory_order_acquire);
+        return !m_prefetchQueue.empty() || !m_prefetchRunning.load(std::memory_order_acquire);
       });
 
       if (!m_prefetchRunning.load(std::memory_order_acquire))
         break;
 
-      if (m_prefetchPending.empty())
+      if (m_prefetchQueue.empty())
         continue;
 
-      auto it = m_prefetchPending.begin();
-      pageIndex = *it;
-      m_prefetchPending.erase(it);
+      blockIndex = m_prefetchQueue.front();
+      m_prefetchQueue.pop_front();
+      generation = m_prefetchGeneration;
     }
 
-    if (pageIndex < 0)
+    if (blockIndex < 0)
+      continue;
+
+    if (IsPrefetchGenerationStale(generation))
       continue;
 
     // Skip if already loaded (racy double-check)
-    if (GetPage(pageIndex))
+    if (GetBlock(blockIndex))
       continue;
 
     // Load via the same read callback — callers are serialized by
     // their own ReadRaw lock so there is no seek/read interleaving.
-    auto page = LoadPage(pageIndex);
-    if (page)
-      ++m_prefetchPageLoads;
+    auto block = ReadBlock(blockIndex);
+    if (!block)
+      continue;
+
+    if (IsPrefetchGenerationStale(generation))
+      continue;
+
+    InsertBlock(blockIndex, block);
+    ++m_prefetchBlockLoads;
   }
 
   CLog::Log(LOGDEBUG, "{}::PrefetchWorker - stopped", LOG_TAG);

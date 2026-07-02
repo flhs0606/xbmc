@@ -218,6 +218,7 @@ protected:
     bool OpenStream(CFileItem &item);
     int ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks);
     int64_t ReadRaw(int64_t offset, uint8_t* buffer, size_t size);
+    void NotifyIsoCacheSeek();
     void SetupPlayerSettings() const;
     void FreeTitleInfo();
     std::atomic<unsigned int> m_isoCacheFallbacks{0};

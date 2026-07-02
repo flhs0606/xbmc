@@ -56,12 +56,13 @@ bool TryStatCache(const std::string& origUrl, std::string& cdnUrl, int64_t& file
   auto it = g_cdnCache.find(origUrl);
   if (it != g_cdnCache.end()) {
     if (it->second.expired()) {
-      CLog::Log(LOGDEBUG, "{}::cache - CDN entry expired for {}", "CCurlFileEngine", origUrl);
+      CLog::Log(LOGDEBUG,"{}::cache - CDN entry expired for {}", "CCurlFileEngine", origUrl);
       g_cdnCache.erase(it);
       return false;
     }
     cdnUrl = it->second.cdnUrl;
     fileSize = it->second.fileSize;
+    CLog::Log(LOGDEBUG,"{}::cache - CDN hit size={} cdn={}", "CCurlFileEngine", fileSize, cdnUrl);
     return true;
   }
   return false;
@@ -78,10 +79,8 @@ void ClearStatCache(const std::string& origUrl)
 {
   std::lock_guard<std::mutex> lk(g_statMutex);
   auto it = g_cdnCache.find(origUrl);
-  if (it != g_cdnCache.end()) {
-    CLog::Log(LOGDEBUG, "{}::cache - clearing CDN entry due to HTTP error: {}", "CCurlFileEngine", origUrl);
+  if (it != g_cdnCache.end())
     g_cdnCache.erase(it);
-  }
 }
 
 static bool TryLockStat(const std::string& origUrl)
@@ -149,7 +148,6 @@ static void EngineCleanupThreadFunc()
     for (auto it = g_engineCache.begin(); it != g_engineCache.end();)
     {
       if (now >= it->second.expire_at) {
-        CLog::Log(LOGDEBUG, "{}::cache - deferred close expired, destroying engine for {}", LOG_TAG, it->first);
         it->second.engine->Close();
         it = g_engineCache.erase(it);
       } else ++it;
@@ -171,12 +169,9 @@ std::unique_ptr<CCurlFileEngine> TryReuseEngine(const std::string& urlKey)
   std::lock_guard<std::mutex> lock(g_engineCacheMutex);
   auto it = g_engineCache.find(urlKey);
   if (it != g_engineCache.end()) {
-    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-      it->second.expire_at - std::chrono::steady_clock::now()).count();
     auto engine = std::move(it->second.engine);
     g_engineCache.erase(it);
     engine->ResetForReuse();
-    CLog::Log(LOGDEBUG, "{}::cache - reused engine (remaining {}ms)", LOG_TAG, remaining);
     return engine;
   }
   return nullptr;
@@ -193,7 +188,6 @@ void CacheEngineForReuse(const std::string& urlKey, std::unique_ptr<CCurlFileEng
   auto expire = std::chrono::steady_clock::now() + std::chrono::milliseconds(ENGINE_CLOSE_DELAY_MS);
   g_engineCache[urlKey] = {std::move(engine), expire};
   g_engineCacheCv.notify_one();
-  CLog::Log(LOGDEBUG, "{}::cache - deferred close ({}ms grace)", LOG_TAG, ENGINE_CLOSE_DELAY_MS);
 }
 
 // =========================================================================
@@ -335,7 +329,7 @@ void CCurlFileEngine::SetupWorkerDownloadOptions(CURL_HANDLE* curl, const std::s
 // Effective URL tracking (identical to vfs.stream.fast approach)
 // =========================================================================
 
-void CCurlFileEngine::UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& origUrl, const char* ctx)
+void CCurlFileEngine::UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& origUrl)
 {
   char* eff = nullptr;
   g_curlInterface.easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff);
@@ -344,7 +338,6 @@ void CCurlFileEngine::UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& o
   if (origUrl == effStr) return;
 
   if (m_effectiveUrl != effStr) {
-    CLog::Log(LOGDEBUG, "{}::{} - {} redirect: {} -> {}", LOG_TAG, ctx, ctx, origUrl, effStr);
     m_effectiveUrl = effStr;
     int64_t newSize = 0;
     struct curl_header* h = nullptr;
@@ -354,7 +347,8 @@ void CCurlFileEngine::UpdateEffectiveUrl(CURL_HANDLE* curl, const std::string& o
     }
     if (newSize <= 0) { long c = 0; g_curlInterface.easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &c);
       if (c == 200) { curl_off_t cl = -1; if (g_curlInterface.easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl) == CURLE_OK && cl > 0) newSize = (int64_t)cl; } }
-    if (newSize > 0 && newSize != m_totalSize) { CLog::Log(LOGDEBUG, "{}::{} - redirect target size: {} (was {})", LOG_TAG, ctx, newSize, m_totalSize); m_totalSize = newSize; }
+    if (newSize > 0 && newSize != m_totalSize)
+      m_totalSize = newSize;
     SaveStatCache(m_fileUrl, effStr, m_totalSize > 0 ? m_totalSize : 0);
   }
 }
@@ -396,17 +390,25 @@ size_t CCurlFileEngine::CacheWriteCallback(void* c, size_t s, size_t n, void* u)
 bool CCurlFileEngine::DownloadRange(CURL_HANDLE* curl, int64_t start, int64_t length, std::vector<uint8_t>& buf)
 {
   if (!curl) return false;
+  ++m_downloadRangeRequests;
   buf.resize((size_t)length); int retries = 0; CURLcode res; long code = 0; char eb[CURL_ERROR_SIZE] = {};
+  bool useEffectiveUrl = !m_effectiveUrl.empty();
   while (retries < m_netMaxRetries) {
     g_curlInterface.easy_reset(curl); eb[0] = 0; g_curlInterface.easy_setopt(curl, CURLOPT_ERRORBUFFER, eb);
-    std::string tUrl = !m_effectiveUrl.empty() ? m_effectiveUrl : FixDavProtocol(m_fileUrl);
+    std::string tUrl = useEffectiveUrl ? m_effectiveUrl : FixDavProtocol(m_fileUrl);
     SetupBaseCurlOptions(curl, tUrl);
     g_curlInterface.easy_setopt(curl, CURLOPT_RANGE, (StringUtils::Format("{}-{}", start, start+length-1)).c_str());
     g_curlInterface.easy_setopt(curl, CURLOPT_TIMEOUT, m_netRangeTotalTimeoutSec + retries*5);
     CWContext ctx{&buf, 0, (size_t)length};
     g_curlInterface.easy_setopt(curl, CURLOPT_WRITEFUNCTION, CacheWriteCallback); g_curlInterface.easy_setopt(curl, CURLOPT_WRITEDATA, &ctx); g_curlInterface.easy_setopt(curl, CURLOPT_FILETIME, 0L);
     res = g_curlInterface.easy_perform(curl); g_curlInterface.easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    if (res == CURLE_OK && (code == 206 || code == 200)) { buf.resize(ctx.offset); UpdateEffectiveUrl(curl, m_fileUrl, "DownloadRange"); return true; }
+    if (res == CURLE_OK && (code == 206 || code == 200)) { buf.resize(ctx.offset); return true; }
+    if (useEffectiveUrl && (code == 401 || code == 403 || code == 404)) {
+      CLog::Log(LOGDEBUG, "{}::DownloadRange - cached CDN rejected code {}, retrying original URL for range {}-{}", LOG_TAG, code, start, start+length-1);
+      InvalidateCdnAndFallBackToSource();
+      useEffectiveUrl = false;
+      continue;
+    }
     CLog::Log(LOGDEBUG, "{}::DownloadRange - retry {}/{} range {}-{} code {} res {}{}{}", LOG_TAG, retries+1, m_netMaxRetries, start, start+length-1, code, (int)res, res!=CURLE_OK?" err=":"", res!=CURLE_OK?eb:"");
     ++retries; if (code == 416 || code == 406) { m_supportRange = false; return false; }
   }
@@ -460,14 +462,13 @@ int CCurlFileEngine::Stat(const CURL& url, struct __stat64* buffer)
     if (ft > 0) m_modTime = (time_t)ft;
     m_supportRange = true;
   }
-  UpdateEffectiveUrl(curl, m_fileUrl, "Stat");
+  UpdateEffectiveUrl(curl, m_fileUrl);
   PoolReturn(curl);
   UnlockStat(m_fileUrl);
 
   m_totalSize = fileSize; m_isDirectory = false;
   if (!m_effectiveUrl.empty() && fileSize > 0) SaveStatCache(m_fileUrl, m_effectiveUrl, fileSize);
   if (buffer) { *buffer = {}; buffer->st_size = fileSize; buffer->st_mode = _S_IFREG; }
-  CLog::Log(LOGDEBUG, "{}::Stat - size={} effective={}", LOG_TAG, fileSize, !m_effectiveUrl.empty()?m_effectiveUrl:"(none)");
   return 0;
 }
 
@@ -480,20 +481,18 @@ bool CCurlFileEngine::Open(const CURL& url)
   m_fileUrl = url.Get();
   ParseProtocolOptions(url);
 
-  m_isIso = true;
   m_userName = url.GetUserName();
   m_password = url.GetPassWord();
 
   m_totalSize = -1;
   m_seekable = true;
   m_supportRange = true;
-  m_isFirstRead = true;
 
   // ★ vfs.stream.fast: Stat HEAD follows 302→CDN, gets size + m_effectiveUrl.
   // Worker then uses m_effectiveUrl (CDN) directly for GET with range.
   Stat(url, nullptr);
-
-  CLog::Log(LOGDEBUG, "{}::Open - {} size={} cdn={}", LOG_TAG, url.GetRedacted(), m_totalSize, !m_effectiveUrl.empty()?m_effectiveUrl:"(none)");
+  CLog::Log(LOGDEBUG,"{}::Open - {} size={} cdn={}", LOG_TAG, url.GetRedacted(), m_totalSize,
+            !m_effectiveUrl.empty() ? m_effectiveUrl : "(none)");
   return true;
 }
 
@@ -502,11 +501,22 @@ bool CCurlFileEngine::Open(const CURL& url)
 // =========================================================================
 
 void CCurlFileEngine::Close() {
+  if (!m_fileUrl.empty())
+    LogStats("close");
   StopWorker(); if (m_customHeaders) { g_curlInterface.slist_free_all(m_customHeaders); m_customHeaders = nullptr; }
-  m_fileUrl.clear(); m_effectiveUrl.clear(); m_logicalPos = 0; m_totalSize = 0; m_isFirstRead = true;
+  m_fileUrl.clear(); m_effectiveUrl.clear(); m_logicalPos = 0; m_totalSize = 0;
 }
 
-void CCurlFileEngine::ResetForReuse() { m_logicalPos = 0; m_isFirstRead = true; m_abortTransfer = false; m_triggerReset = false; m_hasError = false; m_cdnFallbackCount = 0; }
+void CCurlFileEngine::LogStats(const char* reason)
+{
+  CLog::Log(LOGDEBUG,
+            "{}::{} - {} detail: reads={} reqBytes={} lruHits={} misses={} stores={} workerStarts={} workerResets={} rangeRequests={}",
+            LOG_TAG, __FUNCTION__, reason, m_readRequests.load(), m_requestedBytes.load(),
+            m_lruHits.load(), m_lruMisses.load(), m_lruStores.load(), m_workerStarts.load(),
+            m_workerResets.load(), m_downloadRangeRequests.load());
+}
+
+void CCurlFileEngine::ResetForReuse() { m_logicalPos = 0; m_abortTransfer = false; m_triggerReset = false; m_hasError = false; m_cdnFallbackCount = 0; }
 
 // =========================================================================
 // Seek
@@ -529,7 +539,6 @@ int64_t CCurlFileEngine::Seek(int64_t pos, int whence)
   if (m_totalSize>0 && n>m_totalSize) n=m_totalSize;
   if (n==m_logicalPos) return n;
 
-  CLog::Log(LOGDEBUG,"{}::Seek - pos={} (was {})", LOG_TAG, n, m_logicalPos);
   m_logicalPos = n;
   // Lazy: all network work deferred to Read()
   return m_logicalPos;
@@ -550,6 +559,8 @@ int64_t CCurlFileEngine::Seek(int64_t pos, int whence)
 ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
 {
   if (size==0) return 0;
+  ++m_readRequests;
+  m_requestedBytes += static_cast<uint64_t>(size);
   uint8_t* out = (uint8_t*)buffer;
 
   // --- Non-range mode: sequential ring buffer only ---
@@ -558,8 +569,12 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
     std::unique_lock<std::mutex> lk(m_rbMutex);
     while (m_rbAvailable==0) {
       if (m_eof||m_hasError||!m_running) return m_hasError?-1:0;
-      if (m_rbCvReader.wait_for(lk,std::chrono::seconds(60))==std::cv_status::timeout)
-        { CLog::Log(LOGERROR,"{}::Read - timeout waiting for data",LOG_TAG); return -1; }
+      if (m_rbCvReader.wait_for(lk,std::chrono::seconds(30))==std::cv_status::timeout) {
+        CLog::Log(LOGERROR,"{}::Read - timeout waiting for data (source unreachable), aborting", LOG_TAG);
+        m_hasError = true;
+        RequestStopWorker();
+        return -1;
+      }
     }
     size_t rd=std::min(m_rbAvailable,size);
     size_t f=std::min(rd,m_ringBuffer.size()-m_rbTail);
@@ -577,18 +592,22 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
 
   // --- Step 1: LRU cache hit ---
   if (auto c=CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,blk)){
+    ++m_lruHits;
     int64_t bs=blk*(int64_t)lruBlockSize;
     size_t off=(size_t)(m_logicalPos-bs),cs=std::min(size,c->size()-off);
     if (m_totalSize>0)cs=std::min(cs,(size_t)(m_totalSize-m_logicalPos));
-    if (cs>0){memcpy(out,c->data()+off,cs);m_logicalPos+=(int64_t)cs;m_isFirstRead=false;return cs;}
+    if (cs>0){memcpy(out,c->data()+off,cs);m_logicalPos+=(int64_t)cs;return cs;}
   }
+  else
+    ++m_lruMisses;
 
   // --- Step 2: Small file (<blockSize) download entirely ---
-  if (m_totalSize>0 && m_totalSize<=(int64_t)lruBlockSize && m_isFirstRead) {
-    m_isFirstRead=false;
+  // One-shot per Read: after this Put() the next Read will hit Step 1 and
+  // return before reaching here, so no m_isFirstRead guard is needed.
+  if (m_totalSize>0 && m_totalSize<=(int64_t)lruBlockSize) {
     CURL_HANDLE* c=PoolGet(); if(c){
       std::vector<uint8_t> d((size_t)m_totalSize);
-      if(DownloadRange(c,0,m_totalSize,d)){PoolReturn(c);CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,0,d.data(),d.size());
+      if(DownloadRange(c,0,m_totalSize,d)){PoolReturn(c);CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,0,d.data(),d.size());++m_lruStores;
         size_t off=(size_t)m_logicalPos,cs=std::min(size,d.size()-off);
         if(cs>0){memcpy(out,d.data()+off,cs);m_logicalPos+=(int64_t)cs;return cs;}}
       PoolReturn(c);
@@ -597,40 +616,25 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
 
   // --- Step 3: Lazy worker start ---
   if (!m_workerThread.joinable()){
+    ++m_workerStarts;
     int64_t ap=(m_logicalPos/(int64_t)lruBlockSize)*(int64_t)lruBlockSize,sv=m_logicalPos;
     m_logicalPos=ap; StartWorker(); m_logicalPos=sv;
   }
 
-  // --- Step 4: ISO tail + anchor prefetch (matches vfs) ---
-  if (m_isFirstRead && m_isIso && m_totalSize>(int64_t)lruBlockSize) {
-    m_isFirstRead=false;
-    int64_t lb=(m_totalSize-1)/(int64_t)lruBlockSize;
-    // Tail block
-    if (lb!=blk && !CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,lb)){
-      int64_t ls=m_totalSize-lb*(int64_t)lruBlockSize;
-      CLog::Log(LOGDEBUG,"{}::Read - ISO tail prefetch block#{}",LOG_TAG,lb);
-      CURL_HANDLE* c=PoolGet();std::vector<uint8_t> d((size_t)ls);
-      if(c&&DownloadRange(c,lb*(int64_t)lruBlockSize,ls,d)){PoolReturn(c);CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,lb,d.data(),d.size());}
-      else if(c)PoolReturn(c);
-    }
-    // ★ Anchor block: UDF sector 256 is at byte 524288, covered by block#0.
-    //    Prefetch it while Worker is connecting — this serves initial UDF reads.
-    if (blk!=0 && !CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,0)){
-      CLog::Log(LOGDEBUG,"{}::Read - ISO anchor prefetch block#0",LOG_TAG);
-      CURL_HANDLE* c=PoolGet();std::vector<uint8_t> d((size_t)lruBlockSize);
-      if(c&&DownloadRange(c,0,lruBlockSize,d)){PoolReturn(c);CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,0,d.data(),d.size());}
-      else if(c)PoolReturn(c);
-    }
-  } else { m_isFirstRead=false; }
-
-  // --- Step 5: Wait for RingBuffer to contain needed block (vfs pattern) ---
+  // NOTE: the prior ISO tail/anchor prefetch block was removed. It issued
+  // an extra DownloadRange + PoolGet call before the Worker had connected,
+  // doubling connection load against rate-limited CDNs and adding no benefit
+  // once the Worker warmed up the cache lazily. Anchor (block#0) is now
+  // served by the Worker's own first read.
+  // --- Step 4: Wait for RingBuffer to contain needed block (vfs pattern) ---
   int64_t block_start = blk * (int64_t)lruBlockSize;
   int64_t block_end = block_start + (int64_t)lruBlockSize;
   if (m_totalSize>0) block_end = std::min(block_end, m_totalSize);
 
   while (m_running) {
-    // ★ Re-check LRU: tail/anchor prefetch may have filled it
+    // Re-check LRU: another reader may have filled it while the worker was running.
     if (auto c=CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,blk)){
+      ++m_lruHits;
       int64_t bs=blk*(int64_t)lruBlockSize;
       size_t off=(size_t)(m_logicalPos-bs),cs=std::min((size_t)size,c->size()-off);
       if(m_totalSize>0)cs=std::min(cs,(size_t)(m_totalSize-m_logicalPos));
@@ -675,6 +679,7 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
 
       // Write block to LRU
       CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,blk,block_data.data(),bsize);
+      ++m_lruStores;
 
       // Copy requested data from block
       size_t off=(size_t)(m_logicalPos-block_start);
@@ -689,14 +694,17 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
     int64_t plan_limit = buf_end + (int64_t)m_ringBufferSize;
 
     if (block_start < buf_start) {
-      CLog::Log(LOGDEBUG,"{}::Read - behind buffer, teleport to {}",LOG_TAG,block_start);
+      CLog::Log(LOGDEBUG,"{}::Read - behind buffer (block#{} buf=[{}-{}]), teleport to {}",
+                LOG_TAG, blk, buf_start, buf_end, block_start);
       need_reset=true;
     } else if (block_start > plan_limit || (block_start - buf_end) > 16*1024*1024) {
-      CLog::Log(LOGDEBUG,"{}::Read - ahead/gap > 16MB (gap={}), teleport to {}",LOG_TAG,block_start-buf_end,block_start);
+      CLog::Log(LOGDEBUG,"{}::Read - ahead/gap > 16MB (gap={}), teleport to {}",
+                LOG_TAG, (int64_t)(block_start - buf_end), block_start);
       need_reset=true;
     }
 
     if (need_reset) {
+      ++m_workerResets;
       m_resetTargetPos = block_start;
       m_triggerReset = true; m_abortTransfer = true;
       m_rbCvWriter.notify_all();
@@ -704,9 +712,6 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
     }
 
     // --- Drop stale data before reader position ---
-    if (block_start > buf_start + (int64_t)m_rbAvailable) {
-      // Reader is ahead of all buffered data, no point keeping it
-    }
     if (block_start > buf_start && m_rbAvailable > 0) {
       size_t to_drop = std::min((size_t)(block_start - buf_start), m_rbAvailable);
       m_rbTail=(m_rbTail+to_drop)%m_ringBuffer.size(); m_rbAvailable-=to_drop;
@@ -717,14 +722,27 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
     if (m_hasError && !need_reset) return -1;
     if (m_eof && block_start >= m_downloadPos.load()) return 0;
 
-    // ★ Diagnostic: log position once per second
-    static int diagSkip=0;
-    if (++diagSkip % 10 == 0)
-      CLog::Log(LOGDEBUG,"{}::Read - waiting block#{} pos={} buf=[{}-{}] avail={} dp={}",LOG_TAG,blk,m_logicalPos,buf_start,buf_end,(int64_t)m_rbAvailable,dp);
+    // Diagnostic: where are we stuck? Throttled to every 5s of wall clock so
+    // a stalled read produces a steady heartbeat, not a per-iteration flood.
+    // m_lastDiag is per-instance (not static-local) so concurrent engines
+    // don't share a throttle window.
+    {
+      auto now = std::chrono::steady_clock::now();
+      if (m_lastDiag.time_since_epoch().count() == 0 ||
+          now - m_lastDiag >= std::chrono::seconds(5)) {
+        m_lastDiag = now;
+        CLog::Log(LOGDEBUG,"{}::Read - waiting block#{} pos={} buf=[{}-{}] avail={} dp={} eof={} err={}",
+                  LOG_TAG, blk, m_logicalPos, buf_start, buf_end,
+                  (int64_t)m_rbAvailable, dp, m_eof.load(), m_hasError.load());
+      }
+    }
 
-    // --- Wait for Worker to fill data ---
-    if (m_rbCvReader.wait_for(lk, std::chrono::seconds(60)) == std::cv_status::timeout) {
-      CLog::Log(LOGERROR,"{}::Read - timeout waiting for block#{} at pos={}",LOG_TAG,blk,m_logicalPos);
+    // --- Wait for Worker to fill data (30s timeout: source unreachable → fail fast) ---
+    if (m_rbCvReader.wait_for(lk, std::chrono::seconds(30)) == std::cv_status::timeout) {
+      CLog::Log(LOGERROR,"{}::Read - timeout waiting for block#{} at pos={} (source unreachable), aborting",
+                LOG_TAG, blk, m_logicalPos);
+      m_hasError = true;
+      RequestStopWorker();
       return -1;
     }
     if (!m_running) return -1;
@@ -736,8 +754,47 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
 // Worker Thread
 // =========================================================================
 
-void CCurlFileEngine::StartWorker(){if(m_workerThread.joinable()||m_running)return;if(m_ringBuffer.empty()){m_ringBuffer.resize(m_ringBufferSize);CLog::Log(LOGDEBUG,"{}::StartWorker - ring buffer resized to {}MB",LOG_TAG,m_ringBuffer.size()>>20);}m_running=true;m_eof=false;m_hasError=false;m_abortTransfer=false;m_triggerReset=false;m_cdnFallbackCount=0;m_rbHead=0;m_rbTail=0;m_rbAvailable=0;m_rbLogicalStart=m_logicalPos;m_downloadPos=m_logicalPos;m_workerThread=std::thread(&CCurlFileEngine::WorkerLoop,this);}
-void CCurlFileEngine::StopWorker(){m_running=false;m_abortTransfer=true;{std::lock_guard<std::mutex> lk(m_rbMutex);m_rbCvWriter.notify_all();m_rbCvReader.notify_all();}if(m_workerThread.joinable())m_workerThread.join();m_ringBuffer.clear();m_rbHead=0;m_rbTail=0;m_rbAvailable=0;}
+void CCurlFileEngine::StartWorker() {
+  if (m_workerThread.joinable() || m_running) return;
+  if (m_ringBuffer.empty()) {
+    m_ringBuffer.resize(m_ringBufferSize);
+    CLog::Log(LOGDEBUG, "{}::StartWorker - ring buffer allocated {}MB",
+              LOG_TAG, m_ringBuffer.size() >> 20);
+  }
+  m_running        = true;
+  m_eof            = false;
+  m_hasError       = false;
+  m_abortTransfer  = false;
+  m_triggerReset   = false;
+  m_cdnFallbackCount = 0;
+  m_rbHead         = 0;
+  m_rbTail         = 0;
+  m_rbAvailable    = 0;
+  m_rbLogicalStart = m_logicalPos;
+  m_downloadPos    = m_logicalPos;
+  m_workerThread   = std::thread(&CCurlFileEngine::WorkerLoop, this);
+}
+void CCurlFileEngine::RequestStopWorker() {
+  // Note: NOT holding m_rbMutex. Callers that hold it must unlock first
+  // (e.g. Read()'s wait_for timeout paths). std::mutex is not recursive.
+  m_running = false;
+  m_abortTransfer = true;
+  m_rbCvWriter.notify_all();
+  m_rbCvReader.notify_all();
+}
+void CCurlFileEngine::StopWorker() {
+  RequestStopWorker();
+  if (m_workerThread.joinable()) m_workerThread.join();
+  m_ringBuffer.clear();
+  m_rbHead = 0;
+  m_rbTail = 0;
+  m_rbAvailable = 0;
+}
+void CCurlFileEngine::InvalidateCdnAndFallBackToSource() {
+  ClearStatCache(m_fileUrl);
+  m_effectiveUrl.clear();
+  ++m_cdnFallbackCount;
+}
 size_t CCurlFileEngine::WorkerWriteCallback(void* c,size_t s,size_t n,void* u){auto* e=(CCurlFileEngine*)u;return e?e->HandleWorkerWrite(c,s*n):0;}
 
 size_t CCurlFileEngine::HandleWorkerWrite(void* c,size_t s){
@@ -766,10 +823,9 @@ size_t CCurlFileEngine::HandleWorkerWrite(void* c,size_t s){
 
 void CCurlFileEngine::WorkerLoop()
 {
-  CLog::Log(LOGDEBUG, "{}::Worker - thread starting, url={}", LOG_TAG, m_fileUrl);
-
   CURL_HANDLE* curl = PoolGet();
   if (!curl) { CLog::Log(LOGERROR, "{}::Worker - PoolGet FAILED", LOG_TAG); m_hasError = true; m_running = false; return; }
+  CLog::Log(LOGDEBUG, "{}::Worker - thread starting pos={} url={}", LOG_TAG, m_logicalPos, m_fileUrl);
 
   int retries = 0;
   char errbuf[CURL_ERROR_SIZE];
@@ -777,7 +833,6 @@ void CCurlFileEngine::WorkerLoop()
   while (m_running) {
     // ---- 1. Reset phase ----
     if (m_triggerReset) {
-      CLog::Log(LOGDEBUG, "{}::Worker - reset to pos={}", LOG_TAG, m_resetTargetPos.load());
       retries = 0; m_triggerReset = false; m_cdnFallbackCount = 0;
       { std::lock_guard<std::mutex> lk(m_rbMutex); m_rbHead=0; m_rbTail=0; m_rbAvailable=0; m_rbLogicalStart=m_resetTargetPos.load(); m_downloadPos=m_resetTargetPos.load(); m_eof=false; }
       m_hasError = false; m_abortTransfer = false;
@@ -795,9 +850,6 @@ void CCurlFileEngine::WorkerLoop()
     // ---- 3. Download phase ----
     g_curlInterface.easy_reset(curl);
     errbuf[0] = 0; g_curlInterface.easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
-    // ★ Match vfs: verbose curl logging for debugging
-    g_curlInterface.easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
     // ★ vfs.stream.fast: Worker uses CDN URL from Stat. CDN supports range.
     // Stat already established a TCP connection to CDN which is cached
     // in the handle pool and will be reused here.
@@ -806,17 +858,17 @@ void CCurlFileEngine::WorkerLoop()
     int64_t sp = m_downloadPos.load();
     SetupWorkerDownloadOptions(curl, tUrl, sp);
 
-    CLog::Log(LOGDEBUG, "{}::Worker - connecting to {} (pos={})", LOG_TAG, tUrl, sp);
-    // Log handle pointer to verify pool reuse
-    CLog::Log(LOGDEBUG, "{}::Worker - handle=%p calling curl_easy_perform...", LOG_TAG, static_cast<void*>(curl));
+    CLog::Log(LOGDEBUG, "{}::Worker - connecting to {} pos={} retry={}", LOG_TAG, tUrl, sp, retries);
     CURLcode res = g_curlInterface.easy_perform(curl);
     if (!m_running) break;
 
     long code = 0; g_curlInterface.easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    CLog::Log(LOGDEBUG, "{}::Worker - result: res={} code={} avail={} dp={}{}", LOG_TAG, (int)res, code, (int64_t)m_rbAvailable, m_downloadPos.load(), res!=CURLE_OK?StringUtils::Format(" err=%s",errbuf):"");
+    CLog::Log(LOGDEBUG, "{}::Worker - perform done res={} code={} dp={}{}",
+              LOG_TAG, (int)res, code, m_downloadPos.load(),
+              (res != CURLE_OK ? std::string(" err=") + errbuf : std::string{}));
 
     // Update redirect cache after every connection attempt
-    if (code > 0) UpdateEffectiveUrl(curl, m_fileUrl, "Worker");
+    if (code > 0) UpdateEffectiveUrl(curl, m_fileUrl);
 
     // Runtime range detection (vfs pattern)
     if (res == CURLE_OK && !m_supportRange) {
@@ -826,7 +878,10 @@ void CCurlFileEngine::WorkerLoop()
         if (curl_easy_header(curl, "Accept-Ranges", 0, CURLH_HEADER, -1, &h) == CURLHE_OK && h && h->value && std::string(h->value).find("bytes") != std::string::npos)
           sr = true;
       }
-      if (sr) { m_supportRange = true; CLog::Log(LOGDEBUG, "{}::Worker - detected range support", LOG_TAG); }
+      if (sr) {
+        m_supportRange = true;
+        CLog::Log(LOGDEBUG, "{}::Worker - detected range support from Accept-Ranges header", LOG_TAG);
+      }
     }
 
     // ---- 4. Result handling ----
@@ -849,9 +904,7 @@ void CCurlFileEngine::WorkerLoop()
       if (!m_effectiveUrl.empty()) {
         if (m_cdnFallbackCount < 3) {
           CLog::Log(LOGWARNING, "{}::Worker - HTTP {} on CDN URL, retrying with original URL (fallback {}/3)", LOG_TAG, code, m_cdnFallbackCount + 1);
-          ClearStatCache(m_fileUrl);
-          m_effectiveUrl.clear();
-          m_cdnFallbackCount++;
+          InvalidateCdnAndFallBackToSource();
           continue;  // next loop iteration will use m_fileUrl → gets fresh 302→CDN
         }
         CLog::Log(LOGWARNING, "{}::Worker - HTTP {} on CDN URL, max fallback reached, stopping", LOG_TAG, code);
@@ -863,10 +916,8 @@ void CCurlFileEngine::WorkerLoop()
 
     if (res == CURLE_OK) {
       retries = 0;
-      if (m_totalSize == 0 && m_downloadPos.load() > 0) {
+      if (m_totalSize == 0 && m_downloadPos.load() > 0)
         m_totalSize = m_downloadPos.load();
-        CLog::Log(LOGDEBUG, "{}::Worker - runtime size correction: {}", LOG_TAG, m_totalSize);
-      }
       m_eof = true;
       { std::lock_guard<std::mutex> lk(m_rbMutex); m_rbCvReader.notify_all(); }
       // Wait for reset or close
@@ -878,9 +929,7 @@ void CCurlFileEngine::WorkerLoop()
     // Error handling (res != CURLE_OK)
     if (res == CURLE_OPERATION_TIMEDOUT)
       CLog::Log(LOGWARNING, "{}::Worker - timeout, retry {}/{}", LOG_TAG, retries+1, m_netMaxRetries);
-    else if (res == CURLE_WRITE_ERROR)
-      CLog::Log(LOGDEBUG, "{}::Worker - write error (backpressure/teleport), retry {}/{}", LOG_TAG, retries, m_netMaxRetries);
-    else
+    else if (res != CURLE_WRITE_ERROR)
       CLog::Log(LOGDEBUG, "{}::Worker - error: {} ({}), retry {}/{}", LOG_TAG, g_curlInterface.easy_strerror(res), (int)res, retries, m_netMaxRetries);
 
     // ★ Clear CDN URL only on non-write errors (write errors are expected during teleports)
@@ -892,7 +941,6 @@ void CCurlFileEngine::WorkerLoop()
       std::unique_lock<std::mutex> lk(m_rbMutex);
       size_t threshold = (size_t)(m_ringBuffer.size() * 0.9);
       if (m_rbAvailable > threshold && threshold > 0) {
-        CLog::Log(LOGDEBUG, "{}::Worker - buffer full ({} > {}), waiting before retry", LOG_TAG, m_rbAvailable, threshold);
         m_rbCvWriter.wait(lk, [this, threshold]{ return m_rbAvailable < threshold || m_triggerReset.load() || !m_running; });
         if (m_triggerReset) continue;
         if (!m_running) break;

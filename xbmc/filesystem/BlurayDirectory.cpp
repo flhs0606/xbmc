@@ -307,11 +307,12 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
     }
 
     const int64_t sourceLength = m_isoFile->GetLength();
-    if (sourceLength > 0)
+    const bool disableIsoCache = URIUtils::IsHTTP(isoPath, true);
+    if (sourceLength > 0 && !disableIsoCache)
     {
       const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
       CBlurayIsoCache::Config cacheConfig{};
-      cacheConfig.pageSize = adv->m_blurayIsoCachePageSize;
+      cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
       cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
       m_isoCache = std::make_shared<CBlurayIsoCache>(
           sourceLength,
@@ -320,6 +321,12 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
           },
           cacheConfig);
       m_isoCache->Start();
+    }
+    else
+    {
+      CLog::Log(LOGDEBUG,
+                "CBlurayDirectory::InitializeBluray - skip ISO cache for {} (source length {}, http iso {})",
+                CURL::GetRedacted(isoPath), sourceLength, disableIsoCache ? "true" : "false");
     }
 
     if (!bd_open_stream(m_bd, this, ReadBlockCallback))

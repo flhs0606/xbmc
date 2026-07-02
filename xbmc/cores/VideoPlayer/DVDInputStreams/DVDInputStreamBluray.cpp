@@ -511,6 +511,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_SEEK:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
+    NotifyIsoCacheSeek();
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
     //m_hold = HOLD_HELD;
@@ -534,6 +535,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_DISCONTINUITY:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
+    NotifyIsoCacheSeek();
     m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
     m_hold = HOLD_NONE;
     break;
@@ -788,6 +790,17 @@ int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
   return ReadBlocksDirect(buf, lba, num_blocks);
 }
 
+void CDVDInputStreamBluray::NotifyIsoCacheSeek()
+{
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    cache = m_isoCache;
+  }
+  if (cache)
+    cache->NotifySeek();
+}
+
 static uint8_t  clamp(double v)
 {
   return (v) > 255.0 ? 255 : ((v) < 0.0 ? 0 : static_cast<uint32_t>((v + 0.5)));
@@ -1022,6 +1035,8 @@ bool CDVDInputStreamBluray::PosTime(int ms)
   if(bd_seek_time(m_bd, ms * 90) < 0)
     return false;
 
+  NotifyIsoCacheSeek();
+
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
@@ -1054,6 +1069,8 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
     return false;
+
+  NotifyIsoCacheSeek();
 
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
@@ -1515,14 +1532,15 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
   }
 
   const int64_t sourceLength = m_pstream->GetLength();
-  if (sourceLength > 0)
+  const bool disableIsoCache = URIUtils::IsHTTP(item.GetPath(), true);
+  if (sourceLength > 0 && !disableIsoCache)
   {
     const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
     CBlurayIsoCache::Config cacheConfig{};
-    cacheConfig.pageSize = adv->m_blurayIsoCachePageSize;
+    cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
     cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
 
-    CLog::Log(LOGINFO, "CDVDInputStreamBluray::{} - enable Bluray ISO cache for {} ({} bytes)",
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - enable Bluray ISO cache for {} ({} bytes)",
               __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength);
     m_isoCache = std::make_shared<CBlurayIsoCache>(
         sourceLength,
@@ -1532,8 +1550,9 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
   }
   else
   {
-    CLog::Log(LOGINFO, "CDVDInputStreamBluray::{} - skip ISO cache, source length {}",
-              __FUNCTION__, sourceLength);
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - skip ISO cache for {} (source length {}, http iso {})",
+              __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength,
+              disableIsoCache ? "true" : "false");
   }
 
   return true;

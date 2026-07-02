@@ -190,7 +190,7 @@ void CAdvancedSettings::Initialize()
   m_videoFelSeekFix = true;
   m_videoFelSeekFixThresholdFrames = 4;
 
-  m_blurayIsoCachePageSize = 1024 * 1024;
+  m_blurayIsoCacheBlockSize = 1024 * 1024;
   m_blurayIsoCacheMaxBytes = 128 * 1024 * 1024;
 
   m_curlFileLRUCacheBlockSize = 1024 * 1024;
@@ -910,7 +910,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
   pElement = pRootElement->FirstChildElement("blurayisocache");
   if (pElement)
   {
-    XMLUtils::GetUInt(pElement, "pagesize", m_blurayIsoCachePageSize, 2048, 1024 * 1024);
+    XMLUtils::GetUInt(pElement, "blocksize", m_blurayIsoCacheBlockSize, 2048, 1024 * 1024);
     XMLUtils::GetUInt(pElement, "maxbytes", m_blurayIsoCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
   }
 
