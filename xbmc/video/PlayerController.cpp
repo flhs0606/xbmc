@@ -44,6 +44,13 @@ CPlayerController& CPlayerController::GetInstance()
   return instance;
 }
 
+void CPlayerController::PersistRememberedOffsetIfEnabled(float offset)
+{
+  const auto subSettings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+  if (subSettings->IsRememberOffsetEnabled())
+    subSettings->SetRememberedOffset(offset);
+}
+
 bool CPlayerController::OnAction(const CAction &action)
 {
   const unsigned int MsgTime = 300;
@@ -337,23 +344,17 @@ bool CPlayerController::OnAction(const CAction &action)
 
       case ACTION_SUBTITLE_VSHIFT_UP:
       {
-        m_subtitleDynamicOffset -= 0.5f;
-        if (m_subtitleDynamicOffset < -100.0f)
-          m_subtitleDynamicOffset = -100.0f;
-        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
-
-        ShowSlider(action.GetID(), 277, m_subtitleDynamicOffset, -100.0f, 0.5f, 100.0f);
+        const float next = appPlayer->AdjustDynamicSubtitleOffset(-0.5f);
+        PersistRememberedOffsetIfEnabled(next);
+        ShowSlider(action.GetID(), 277, next, -100.0f, 0.5f, 100.0f);
         return true;
       }
 
       case ACTION_SUBTITLE_VSHIFT_DOWN:
       {
-        m_subtitleDynamicOffset += 0.5f;
-        if (m_subtitleDynamicOffset > 100.0f)
-          m_subtitleDynamicOffset = 100.0f;
-        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
-
-        ShowSlider(action.GetID(), 277, m_subtitleDynamicOffset, -100.0f, 0.5f, 100.0f);
+        const float next = appPlayer->AdjustDynamicSubtitleOffset(0.5f);
+        PersistRememberedOffsetIfEnabled(next);
+        ShowSlider(action.GetID(), 277, next, -100.0f, 0.5f, 100.0f);
         return true;
       }
 
@@ -371,8 +372,9 @@ bool CPlayerController::OnAction(const CAction &action)
 
         settings->SetAlignment(align);
 
-        m_subtitleDynamicOffset = 0.0f;
-        appPlayer->SetDynamicSubtitleOffset(m_subtitleDynamicOffset);
+        // Reset renderer offset; the next CRenderer::Reset() will re-seed from
+        // settings if remember-offset is on.
+        appPlayer->SetDynamicSubtitleOffset(0.0f);
 
         CGUIDialogKaiToast::QueueNotification(
             CGUIDialogKaiToast::Info, g_localizeStrings.Get(21460),

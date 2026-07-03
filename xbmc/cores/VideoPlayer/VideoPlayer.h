@@ -302,6 +302,8 @@ public:
 
   void SetDynamicSubtitleOffset(const float value) override;
 
+  float AdjustDynamicSubtitleOffset(float delta) override;
+
   void AddSubtitle(const std::string& strSubPath) override;
 
   int GetAudioStreamCount() const override;

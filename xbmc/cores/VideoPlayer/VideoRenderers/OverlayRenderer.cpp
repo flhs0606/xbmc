@@ -19,6 +19,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "settings/SubtitlesSettings.h"
 #include "windowing/GraphicContext.h"
 
 #include <algorithm>
@@ -94,7 +95,13 @@ void CRenderer::Flush()
 void CRenderer::Reset()
 {
   m_subtitlePosition = 0;
-  m_subtitleDynamicOffset.store(0.0f, std::memory_order_relaxed);
+  // Inject the remembered offset here rather than in CVideoPlayer::OpenFile —
+  // Reset() runs after Configure() and is the last write before the next render.
+  const auto subSettings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+  const float remembered = subSettings->IsRememberOffsetEnabled()
+                               ? subSettings->GetRememberedOffset()
+                               : 0.0f;
+  m_subtitleDynamicOffset.store(remembered, std::memory_order_relaxed);
   m_subtitleViewHeight = 0;
 }
 
@@ -300,6 +307,17 @@ void CRenderer::SetStereoMode(const std::string &stereomode)
 void CRenderer::SetDynamicSubtitleOffset(const float value)
 {
   m_subtitleDynamicOffset.store(value, std::memory_order_relaxed);
+}
+
+float CRenderer::AdjustDynamicSubtitleOffset(float delta)
+{
+  float next = m_subtitleDynamicOffset.load(std::memory_order_relaxed) + delta;
+  if (next < -100.0f)
+    next = -100.0f;
+  else if (next > 100.0f)
+    next = 100.0f;
+  m_subtitleDynamicOffset.store(next, std::memory_order_relaxed);
+  return next;
 }
 
 void CRenderer::SetSubtitleVerticalPosition(const int value, bool save)
@@ -536,6 +554,10 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
     case ObservableMessageSettingsChanged:
     {
       m_isSettingsChanged = true;
+      // Remember-offset disabled: snap atomic to 0 so the next render reflects it.
+      const auto subSettings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+      if (!subSettings->IsRememberOffsetEnabled())
+        m_subtitleDynamicOffset.store(0.0f, std::memory_order_relaxed);
       break;
     }
     default:

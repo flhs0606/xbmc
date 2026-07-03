@@ -208,6 +208,24 @@ public:
    */
   float GetPositionPercentage() const;
 
+  /*!
+   * \brief Check if remembering the dynamic subtitle offset is enabled
+   * \return True if remember-offset is enabled, otherwise false
+   */
+  bool IsRememberOffsetEnabled() const;
+
+  /*!
+   * \brief Get the remembered dynamic subtitle offset (% of screen height)
+   * \return The remembered offset, in [-100, 100]
+   */
+  float GetRememberedOffset() const;
+
+  /*!
+   * \brief Persist the dynamic subtitle offset for later restore
+   * \param value The offset in % of screen height, in [-100, 100]
+   */
+  void SetRememberedOffset(float value) const;
+
   static void SettingOptionsSubtitleFontsFiller(const std::shared_ptr<const CSetting>& setting,
                                                 std::vector<StringSettingOption>& list,
                                                 std::string& current,

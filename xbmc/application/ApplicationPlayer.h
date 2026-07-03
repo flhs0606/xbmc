@@ -170,6 +170,12 @@ public:
    */
   void SetDynamicSubtitleOffset(const float value);
 
+  /*!
+   * \brief Adjust the dynamic subtitle offset by \p delta, clamped to [-100, 100].
+   *        See IPlayer::AdjustDynamicSubtitleOffset.
+   */
+  float AdjustDynamicSubtitleOffset(float delta);
+
   void SetTime(int64_t time);
   void SetTotalTime(int64_t time);
   void SetVideoStream(int iStream);

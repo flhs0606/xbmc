@@ -1016,6 +1016,11 @@ void CRenderManager::SetDynamicSubtitleOffset(float value)
   m_overlays.SetDynamicSubtitleOffset(value);
 }
 
+float CRenderManager::AdjustDynamicSubtitleOffset(float delta)
+{
+  return m_overlays.AdjustDynamicSubtitleOffset(delta);
+}
+
 bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait)
 {
   int index;

@@ -139,6 +139,15 @@ public:
    */
   virtual void SetDynamicSubtitleOffset(float value) {}
 
+  /*!
+   * \brief Adjust the dynamic subtitle offset by \p delta, clamped to [-100, 100].
+   *        Atomically reads-modifies-writes the value, so callers don't need to
+   *        fetch the current value and write it back.
+   * \param delta The offset change in percentage of screen height
+   * \return The clamped offset value after adjustment
+   */
+  virtual float AdjustDynamicSubtitleOffset(float delta) { return 0.0f; }
+
   /** \brief Adds the subtitle(s) provided by the given file to the available player streams
   *          and actives the first of the added stream(s). E.g., vob subs can contain multiple streams.
   *   \param[in] strSubPath The full path of the subtitle file.

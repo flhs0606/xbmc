@@ -39,7 +39,8 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
        CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LOCALMOVEMENT,
-       CSettings::SETTING_SUBTITLES_POSITIONPERCENTAGE});
+       CSettings::SETTING_SUBTITLES_POSITIONPERCENTAGE,
+       CSettings::SETTING_SUBTITLES_REMEMBEROFFSET, CSettings::SETTING_SUBTITLES_SUBTITLEOFFSET});
 }
 
 CSubtitlesSettings::~CSubtitlesSettings()
@@ -58,6 +59,14 @@ void CSubtitlesSettings::OnSettingChanged(const std::shared_ptr<const CSetting>&
   {
     SetChanged();
     NotifyObservers(ObservableMessagePositionChanged);
+  }
+  else if (setting->GetId() == CSettings::SETTING_SUBTITLES_REMEMBEROFFSET)
+  {
+    // When the remember-offset toggle is turned off, clear the remembered
+    // offset so guisettings.xml does not retain a stale value that would
+    // resurrect if the user later re-enables the toggle.
+    if (!m_settings->GetBool(CSettings::SETTING_SUBTITLES_REMEMBEROFFSET))
+      m_settings->SetNumber(CSettings::SETTING_SUBTITLES_SUBTITLEOFFSET, 0.0);
   }
 }
 
@@ -157,6 +166,21 @@ bool CSubtitlesSettings::IsLocalMovementEnabled() const
 float CSubtitlesSettings::GetPositionPercentage() const
 {
   return static_cast<float>(m_settings->GetInt(CSettings::SETTING_SUBTITLES_POSITIONPERCENTAGE));
+}
+
+bool CSubtitlesSettings::IsRememberOffsetEnabled() const
+{
+  return m_settings->GetBool(CSettings::SETTING_SUBTITLES_REMEMBEROFFSET);
+}
+
+float CSubtitlesSettings::GetRememberedOffset() const
+{
+  return static_cast<float>(m_settings->GetNumber(CSettings::SETTING_SUBTITLES_SUBTITLEOFFSET));
+}
+
+void CSubtitlesSettings::SetRememberedOffset(float value) const
+{
+  m_settings->SetNumber(CSettings::SETTING_SUBTITLES_SUBTITLEOFFSET, static_cast<double>(value));
 }
 
 void CSubtitlesSettings::SettingOptionsSubtitleFontsFiller(const SettingConstPtr& setting,

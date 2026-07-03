@@ -713,6 +713,14 @@ void CApplicationPlayer::SetDynamicSubtitleOffset(float value)
   }
 }
 
+float CApplicationPlayer::AdjustDynamicSubtitleOffset(float delta)
+{
+  std::shared_ptr<IPlayer> player = GetInternal();
+  if (player)
+    return player->AdjustDynamicSubtitleOffset(delta);
+  return 0.0f;
+}
+
 void CApplicationPlayer::SetTime(int64_t time)
 {
   std::shared_ptr<IPlayer> player = GetInternal();

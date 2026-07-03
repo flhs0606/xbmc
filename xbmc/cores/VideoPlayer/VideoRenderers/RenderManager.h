@@ -95,6 +95,12 @@ public:
    */
   void SetDynamicSubtitleOffset(const float value);
 
+  /*!
+   * \brief Adjust the dynamic subtitle offset by \p delta (clamped to [-100, 100]).
+   *        Returns the clamped offset after adjustment.
+   */
+  float AdjustDynamicSubtitleOffset(float delta);
+
   unsigned int AllocRenderCapture();
   void ReleaseRenderCapture(unsigned int captureId);
   void StartRenderCapture(unsigned int captureId, unsigned int width, unsigned int height, int flags);

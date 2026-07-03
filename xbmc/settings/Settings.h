@@ -182,6 +182,8 @@ public:
   static constexpr auto SETTING_SUBTITLES_MOVIE = "subtitles.movie";
   static constexpr auto SETTING_SUBTITLES_LOCALMOVEMENT = "subtitles.localmovement";
   static constexpr auto SETTING_SUBTITLES_POSITIONPERCENTAGE = "subtitles.positionpercentage";
+  static constexpr auto SETTING_SUBTITLES_REMEMBEROFFSET = "subtitles.rememberoffset";
+  static constexpr auto SETTING_SUBTITLES_SUBTITLEOFFSET = "subtitles.subtitleoffset";
   static constexpr auto SETTING_DVDS_AUTORUN = "dvds.autorun";
   static constexpr auto SETTING_DVDS_PLAYERREGION = "dvds.playerregion";
   static constexpr auto SETTING_DVDS_AUTOMENU = "dvds.automenu";

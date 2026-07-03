@@ -24076,6 +24076,30 @@ msgctxt "#39205"
 msgid "Defines the threshold percentage from the top of screen below which subtitles are affected by local movement."
 msgstr ""
 
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39206"
+msgid "Remember subtitle offset"
+msgstr ""
+
+#. Help text for setting "Remember subtitle offset" of label #39206
+#: system/settings/settings.xml
+msgctxt "#39207"
+msgid "When enabled, the position of subtitles moved during playback is saved and restored on next playback."
+msgstr ""
+
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39208"
+msgid "Subtitle offset (remembered)"
+msgstr ""
+
+#. Help text for setting "Subtitle offset (remembered)" of label #39208
+#: system/settings/settings.xml
+msgctxt "#39209"
+msgid "Offset from default position, in percentage of screen height. Negative moves up, positive moves down."
+msgstr ""
+
 #. Help text for setting "Use system HDR/SDR brightness balance" of label #36096
 #: system/settings/settings.xml
 msgctxt "#39190"

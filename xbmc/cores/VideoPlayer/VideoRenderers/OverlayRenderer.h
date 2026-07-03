@@ -139,6 +139,12 @@ namespace OVERLAY {
      */
     void SetDynamicSubtitleOffset(const float value);
 
+    /*!
+     * \brief Adjust the dynamic subtitle offset by \p delta (clamped to [-100, 100]).
+     *        Returns the clamped offset after adjustment.
+     */
+    float AdjustDynamicSubtitleOffset(float delta);
+
   protected:
     /*!
      * \brief Reset the subtitle position to default value
