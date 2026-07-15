@@ -14,6 +14,9 @@
 #include <memory>
 #include <mutex>
 
+#include "cores/VideoPlayer/DVDInputStreams/BlurayIsoRegistry.h"
+
+
 class CBlurayIsoCache;
 class CFileItem;
 class CFileItemList;
@@ -64,6 +67,11 @@ private:
   std::shared_ptr<CBlurayIsoCache> m_isoCache;
   std::shared_ptr<XFILE::CFile> m_isoFile;
   std::mutex m_isoReadLock;
+
+  // 非空表示本实例复用了共享句柄
+  std::shared_ptr<BlurayIsoSharedHandle> m_sharedHandle;
+  // 注册表key，Dispose时用于Release
+  std::string m_isoPathKey;
 };
 
 }

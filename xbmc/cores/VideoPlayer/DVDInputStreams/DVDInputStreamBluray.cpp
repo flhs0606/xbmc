@@ -48,6 +48,11 @@ using namespace XFILE;
 
 using namespace std::chrono_literals;
 
+namespace
+{
+constexpr const char* LOG_TAG = "CDVDInputStreamBluray";
+}
+
 static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
 {
   auto blurayStream = reinterpret_cast<CDVDInputStreamBluray*>(handle);
@@ -253,11 +258,32 @@ bool CDVDInputStreamBluray::Open()
 
   if (openStream)
   {
-    if (!bd_open_stream(m_bd, this, read_blocks))
+    bd_set_debug_handler(CBlurayCallback::bluray_logger);
+    bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV);
+
+    if (m_sharedHandle && m_sharedHandle->bd)
     {
-      CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in stream mode",
-                CURL::GetRedacted(root));
-      return false;
+      m_bd = m_sharedHandle->bd;
+      SetupPlayerSettings();
+      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - using shared bd handle for {}",
+                __FUNCTION__, CURL::GetRedacted(root));
+    }
+    else
+    {
+      m_bd = bd_init();
+      if (!m_bd)
+      {
+        CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to initialize libbluray");
+        return false;
+      }
+      SetupPlayerSettings();
+
+      if (!bd_open_stream(m_bd, this, read_blocks))
+      {
+        CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in stream mode",
+                  CURL::GetRedacted(root));
+        return false;
+      }
     }
   }
   else if (openDisc)
@@ -430,28 +456,50 @@ void CDVDInputStreamBluray::Close()
   FreeTitleInfo();
 
   if (m_isoCacheFallbacks > 0)
-  {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - ISO cache fallbacks {}", __FUNCTION__,
+    CLog::Log(LOGDEBUG, "{}::{} - ISO cache fallbacks: {}", LOG_TAG, __FUNCTION__,
               m_isoCacheFallbacks.load());
-  }
 
+  if (m_sharedHandle)
   {
     std::shared_ptr<CBlurayIsoCache> cache;
     {
       std::lock_guard<std::mutex> lock(m_isoCacheMutex);
       cache = std::move(m_isoCache);
     }
-    if (cache)
-      cache->Stop();
+    // 共享cache的Stop()由最后一个Release者负责，这里不主动Stop
+
+    const bool wasLast = CBlurayIsoRegistry::Get().Release(m_isoPathKey);
+    if (wasLast)
+    {
+      if (cache)
+        cache->Stop();
+      if (m_bd)
+        bd_close(m_bd);
+    }
+    // 非最后引用者：不能关闭bd/cache，直接放弃本地指针
+    m_sharedHandle.reset();
+    m_isoPathKey.clear();
+    m_bd = nullptr;
+    m_pstream.reset();
+    m_rootPath.clear();
+    return;
   }
 
-  if(m_bd)
+  // 原有独立关闭逻辑（非共享路径）
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    cache = std::move(m_isoCache);
+  }
+  if (cache)
+    cache->Stop();
+
+  if (m_bd)
   {
     bd_register_overlay_proc(m_bd, nullptr, nullptr);
     bd_close(m_bd);
+    m_bd = nullptr;
   }
-
-  m_bd = nullptr;
   m_pstream.reset();
   m_rootPath.clear();
 }
@@ -1506,24 +1554,46 @@ void CDVDInputStreamBluray::SetupPlayerSettings() const {
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
 {
-  CLog::Log(LOGINFO, "CDVDInputStreamBluray::{} - opening ISO stream for {}",
-            __FUNCTION__, CURL::GetRedacted(item.GetPath()));
+  CLog::Log(LOGINFO, "{}::{} - opening ISO stream for {}", LOG_TAG, __FUNCTION__,
+            CURL::GetRedacted(item.GetPath()));
 
+  const std::string isoPath = item.GetPath();
+
+  // 优先查全局注册表，命中说明目录浏览阶段（或前一次播放）已打开同一ISO
+  auto shared = CBlurayIsoRegistry::Get().TryAcquire(isoPath);
+  if (shared && shared->bd)
   {
-    std::shared_ptr<CBlurayIsoCache> cache;
+    std::shared_ptr<CBlurayIsoCache> oldCache;
     {
       std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      cache = std::move(m_isoCache);
+      oldCache = std::move(m_isoCache);
+      m_isoCache = shared->isoCache;
     }
-    if (cache)
-      cache->Stop();
+    if (oldCache)
+      oldCache->Stop();
+
+    m_sharedHandle = shared;
+    m_isoPathKey = isoPath;
+    m_isoCacheFallbacks = 0;
+
+    // bd指针会在Open()主流程里被赋值为共享句柄的bd，见下方Open()改动
+    CLog::Log(LOGDEBUG, "{}::{} - reused shared ISO handle for {}", LOG_TAG, __FUNCTION__,
+              CURL::GetRedacted(isoPath));
+    return true;
   }
 
+  // 原有独立打开逻辑保留（无共享句柄可用时的兜底路径）
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+    cache = std::move(m_isoCache);
+  }
+  if (cache)
+    cache->Stop();
   m_isoCacheFallbacks = 0;
 
-  m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
-                                                              READ_CHUNKED | READ_NO_CACHE);
-
+  m_pstream = std::make_unique<CDVDInputStreamFile>(
+      item, READ_TRUNCATED | READ_BITRATE | READ_CHUNKED | READ_NO_CACHE);
   if (!m_pstream->Open())
   {
     CLog::Log(LOGERROR, "Error opening image file {}", CURL::GetRedacted(item.GetPath()));
@@ -1539,19 +1609,22 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
     CBlurayIsoCache::Config cacheConfig{};
     cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
     cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
-
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - enable Bluray ISO cache for {} ({} bytes)",
-              __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength);
-    m_isoCache = std::make_shared<CBlurayIsoCache>(
-        sourceLength,
-      [this](int64_t offset, uint8_t* buffer, size_t size) { return ReadRaw(offset, buffer, size); },
-      cacheConfig);
+    CLog::Log(LOGDEBUG, "{}::{} - enable Bluray ISO cache for {} bytes", LOG_TAG, __FUNCTION__,
+              CURL::GetRedacted(item.GetPath()), sourceLength);
+    {
+      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+      m_isoCache = std::make_shared<CBlurayIsoCache>(
+          sourceLength, [this](int64_t offset, uint8_t* buffer, size_t size) {
+            return ReadRaw(offset, buffer, size);
+          },
+          cacheConfig);
+    }
     m_isoCache->Start();
   }
   else
   {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - skip ISO cache for {} (source length {}, http iso {})",
-              __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength,
+    CLog::Log(LOGDEBUG, "{}::{} - skip ISO cache for {} (source length {}, http iso {})",
+              LOG_TAG, __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength,
               disableIsoCache ? "true" : "false");
   }
 

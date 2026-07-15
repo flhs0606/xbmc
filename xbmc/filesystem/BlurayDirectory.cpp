@@ -50,6 +50,28 @@ CBlurayDirectory::~CBlurayDirectory()
 
 void CBlurayDirectory::Dispose()
 {
+  if (m_sharedHandle)
+  {
+    // 本实例只是共享句柄的使用者之一，Release后若不是最后一个引用者，
+    // 直接放弃本地指针即可，不能关闭底层资源。
+    const bool wasLast = CBlurayIsoRegistry::Get().Release(m_isoPathKey);
+    if (wasLast)
+    {
+      // 我方是最后持有者，真正负责关闭
+      if (m_sharedHandle->isoCache)
+        m_sharedHandle->isoCache->Stop();
+      if (m_sharedHandle->bd)
+        bd_close(m_sharedHandle->bd);
+    }
+    m_sharedHandle.reset();
+    m_isoPathKey.clear();
+    m_bd = nullptr;
+    m_isoCache.reset();
+    m_isoFile.reset();
+    return;
+  }
+
+  // 原有独立关闭逻辑
   if (m_isoCache)
   {
     m_isoCache->Stop();
@@ -266,17 +288,8 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
   bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV);
 
-  m_bd = bd_init();
-
-  if (!m_bd)
-  {
-    CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to initialize libbluray");
-    return false;
-  }
-
   std::string langCode;
   g_LangCodeExpander.ConvertToISO6392T(g_langInfo.GetDVDMenuLanguage(), langCode);
-  bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
 
   m_realPath = root;
 
@@ -298,11 +311,53 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
 
   if (isDiscImage)
   {
+    // 优先查全局注册表，命中说明播放侧或另一次浏览已经打开了同一ISO
+    auto shared = CBlurayIsoRegistry::Get().TryAcquire(isoPath);
+    if (shared && shared->bd)
+    {
+      m_bd = shared->bd;
+      m_isoFile = shared->isoFile;
+      m_isoCache = shared->isoCache;
+      m_sharedHandle = shared;
+      m_isoPathKey = isoPath;
+      m_blurayInitialized = true;
+      CLog::Log(LOGDEBUG,
+                "CBlurayDirectory::InitializeBluray - reused shared ISO handle for {}",
+                CURL::GetRedacted(isoPath));
+      return true;
+    }
+
+    // 注册一个pending占位，防止与播放侧同时创建
+    auto pending = CBlurayIsoRegistry::Get().CreatePending(isoPath);
+    if (pending->bd)
+    {
+      // 极端竞态：刚才TryAcquire没命中，但CreatePending时另一线程已经发布完成
+      m_bd = pending->bd;
+      m_isoFile = pending->isoFile;
+      m_isoCache = pending->isoCache;
+      m_sharedHandle = pending;
+      m_isoPathKey = isoPath;
+      m_blurayInitialized = true;
+      return true;
+    }
+
+    m_bd = bd_init();
+    if (!m_bd)
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to initialize libbluray");
+      CBlurayIsoRegistry::Get().Release(isoPath);
+      return false;
+    }
+    bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
+
     m_isoFile = std::make_shared<CFile>();
     if (!m_isoFile->Open(isoPath))
     {
       CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open ISO file {}",
                 CURL::GetRedacted(isoPath));
+      bd_close(m_bd);
+      m_bd = nullptr;
+      CBlurayIsoRegistry::Get().Release(isoPath);
       return false;
     }
 
@@ -333,11 +388,32 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
     {
       CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {} in stream mode",
                 CURL::GetRedacted(root));
+      if (m_isoCache) { m_isoCache->Stop(); m_isoCache.reset(); }
+      m_isoFile.reset();
+      bd_close(m_bd);
+      m_bd = nullptr;
+      CBlurayIsoRegistry::Get().Release(isoPath);
       return false;
     }
+
+    // 打开成功，填充pending句柄并发布，供后续TryAcquire命中
+    pending->bd = m_bd;
+    pending->isoFile = m_isoFile;
+    pending->isoCache = m_isoCache;
+    CBlurayIsoRegistry::Get().Publish(isoPath, pending);
+    m_sharedHandle = pending;
+    m_isoPathKey = isoPath;
   }
   else
   {
+    m_bd = bd_init();
+    if (!m_bd)
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to initialize libbluray");
+      return false;
+    }
+    bd_set_player_setting_str(m_bd, BLURAY_PLAYER_SETTING_MENU_LANG, langCode.c_str());
+
     if (!bd_open_files(m_bd, &m_realPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
     {
       CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {}",

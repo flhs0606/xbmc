@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "BlurayIsoRegistry.h"
 #include "BlurayStateSerializer.h"
 #include "DVDInputStream.h"
 
@@ -226,6 +227,9 @@ protected:
     std::shared_ptr<CBlurayIsoCache> m_isoCache;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
+
+    std::shared_ptr<BlurayIsoSharedHandle> m_sharedHandle;
+    std::string m_isoPathKey;
 
     /*! Bluray state serializer handler */
     CBlurayStateSerializer m_blurayStateSerializer;
