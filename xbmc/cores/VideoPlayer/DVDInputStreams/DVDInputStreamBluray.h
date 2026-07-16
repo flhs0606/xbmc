@@ -222,6 +222,7 @@ protected:
     void SetupPlayerSettings() const;
     void FreeTitleInfo();
     std::atomic<unsigned int> m_isoCacheFallbacks{0};
+    std::atomic<bool> m_closing{false};
     std::mutex m_isoCacheMutex;
     std::shared_ptr<CBlurayIsoCache> m_isoCache;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;

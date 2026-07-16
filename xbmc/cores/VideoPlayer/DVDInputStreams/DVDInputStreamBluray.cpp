@@ -426,6 +426,8 @@ bool CDVDInputStreamBluray::Open()
 // close file and reset everything
 void CDVDInputStreamBluray::Close()
 {
+  m_closing.store(true, std::memory_order_release);
+
   CloseMVCDemux();
   FreeTitleInfo();
 
@@ -452,7 +454,10 @@ void CDVDInputStreamBluray::Close()
   }
 
   m_bd = nullptr;
-  m_pstream.reset();
+  {
+    std::lock_guard lock(m_readBlocksLock);
+    m_pstream.reset();
+  }
   m_rootPath.clear();
 }
 
@@ -767,6 +772,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 
 int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
 {
+  if (m_closing.load(std::memory_order_acquire))
+    return -1;
+
   std::shared_ptr<CBlurayIsoCache> cache;
   {
     std::lock_guard<std::mutex> lock(m_isoCacheMutex);
@@ -1520,6 +1528,7 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
   }
 
   m_isoCacheFallbacks = 0;
+  m_closing.store(false, std::memory_order_release);
 
   m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
                                                               READ_CHUNKED | READ_NO_CACHE);
@@ -1539,6 +1548,7 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
     CBlurayIsoCache::Config cacheConfig{};
     cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
     cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
+    cacheConfig.prefetch = adv->m_blurayIsoCachePrefetch;
 
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - enable Bluray ISO cache for {} ({} bytes)",
               __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength);
@@ -1560,14 +1570,17 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
 
 int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks)
 {
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream)
+  if (m_closing.load(std::memory_order_acquire))
     return -1;
 
   int result = -1;
   int64_t offset = static_cast<int64_t>(lba) * 2048;
 
   std::lock_guard lock(m_readBlocksLock);
+
+  CDVDInputStreamFile* lpstream = m_pstream.get();
+  if (!lpstream || m_closing.load(std::memory_order_relaxed))
+    return -1;
 
   if (lpstream->Seek(offset, SEEK_SET) >= 0)
   {
@@ -1581,14 +1594,17 @@ int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_block
 
 int64_t CDVDInputStreamBluray::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
 {
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream || !buffer || size == 0)
+  if (!buffer || size == 0 || m_closing.load(std::memory_order_acquire))
     return -1;
 
   if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
     return -1;
 
   std::lock_guard lock(m_readBlocksLock);
+
+  CDVDInputStreamFile* lpstream = m_pstream.get();
+  if (!lpstream || m_closing.load(std::memory_order_relaxed))
+    return -1;
 
   if (lpstream->Seek(offset, SEEK_SET) < 0)
     return -1;

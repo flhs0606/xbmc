@@ -50,17 +50,27 @@ CBlurayDirectory::~CBlurayDirectory()
 
 void CBlurayDirectory::Dispose()
 {
-  if (m_isoCache)
+  m_disposing.store(true, std::memory_order_release);
+
   {
-    m_isoCache->Stop();
-    m_isoCache.reset();
+    std::shared_ptr<CBlurayIsoCache> cache;
+    {
+      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+      cache = std::move(m_isoCache);
+    }
+    if (cache)
+      cache->Stop();
   }
-  m_isoFile.reset();
 
   if(m_bd)
   {
     bd_close(m_bd);
     m_bd = nullptr;
+  }
+
+  {
+    std::lock_guard lock(m_isoReadLock);
+    m_isoFile.reset();
   }
 }
 
@@ -263,6 +273,8 @@ CURL CBlurayDirectory::GetUnderlyingCURL(const CURL& url)
 
 bool CBlurayDirectory::InitializeBluray(const std::string &root)
 {
+  m_disposing.store(false, std::memory_order_release);
+
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
   bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV);
 
@@ -314,13 +326,18 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
       CBlurayIsoCache::Config cacheConfig{};
       cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
       cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
-      m_isoCache = std::make_shared<CBlurayIsoCache>(
+      cacheConfig.prefetch = adv->m_blurayIsoCachePrefetch;
+      auto cache = std::make_shared<CBlurayIsoCache>(
           sourceLength,
           [this](int64_t offset, uint8_t* buffer, size_t size) {
             return ReadRaw(offset, buffer, size);
           },
           cacheConfig);
-      m_isoCache->Start();
+      {
+        std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+        m_isoCache = cache;
+      }
+      cache->Start();
     }
     else
     {
@@ -366,7 +383,7 @@ std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
   // ★ Skip disc.inf for HTTP ISO: disc.inf almost never exists (99.9% of ISOs),
   // and CFile::Open would create a new HTTP connection consuming the CDN token
   // which can cause 403 → crash. Let GetTitles fallback to bd_get_titles() API.
-  if (m_isoFile || m_isoCache)
+  if (m_isoFile)
     return {};
 
   std::string root = m_url.GetHostName();
@@ -422,11 +439,16 @@ std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
 int CBlurayDirectory::ReadBlockCallback(void* handle, void* buf, int lba, int num_blocks)
 {
   auto* self = static_cast<CBlurayDirectory*>(handle);
-  if (!self || !self->m_isoFile)
+  if (!self || !buf || self->m_disposing.load(std::memory_order_acquire))
     return -1;
 
-  if (self->m_isoCache)
-    return self->m_isoCache->ReadBlocks(static_cast<uint8_t*>(buf), lba, num_blocks);
+  std::shared_ptr<CBlurayIsoCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(self->m_isoCacheMutex);
+    cache = self->m_isoCache;
+  }
+  if (cache)
+    return cache->ReadBlocks(static_cast<uint8_t*>(buf), lba, num_blocks);
 
   // Fallback: direct read
   int64_t offset = static_cast<int64_t>(lba) * 2048;
@@ -437,13 +459,16 @@ int CBlurayDirectory::ReadBlockCallback(void* handle, void* buf, int lba, int nu
 
 int64_t CBlurayDirectory::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
 {
-  if (!m_isoFile || !buffer || size == 0)
+  if (!buffer || size == 0 || m_disposing.load(std::memory_order_acquire))
     return -1;
 
   if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
     return -1;
 
   std::lock_guard lock(m_isoReadLock);
+
+  if (!m_isoFile || m_disposing.load(std::memory_order_relaxed))
+    return -1;
 
   if (m_isoFile->Seek(offset, SEEK_SET) != offset)
     return -1;

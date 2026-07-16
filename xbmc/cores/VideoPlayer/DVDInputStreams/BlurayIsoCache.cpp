@@ -54,11 +54,18 @@ void CBlurayIsoCache::Start()
   m_started = true;
 
   CLog::Log(LOGDEBUG,
-            "{}::{} - cache config blockSize={} maxBytes={} maxBlocks={}",
-            LOG_TAG, __FUNCTION__, m_config.blockSize, m_config.maxBytes, m_maxBlocks);
+            "{}::{} - cache config blockSize={} maxBytes={} maxBlocks={} prefetch={}",
+            LOG_TAG, __FUNCTION__, m_config.blockSize, m_config.maxBytes, m_maxBlocks,
+            m_config.prefetch ? "true" : "false");
 
   CLog::Log(LOGDEBUG, "{}::{} - Bluray ISO cache started for {} bytes source",
             LOG_TAG, __FUNCTION__, m_sourceLength);
+
+  if (!m_config.prefetch)
+  {
+    CLog::Log(LOGDEBUG, "{}::{} - background prefetch disabled", LOG_TAG, __FUNCTION__);
+    return;
+  }
 
   // Launch burst prefetch background thread
   m_prefetchRunning = true;
@@ -114,7 +121,8 @@ int CBlurayIsoCache::ReadBlocks(uint8_t* buffer, int lba, int numBlocks)
   const int64_t firstBlock = offset / static_cast<int64_t>(m_config.blockSize);
   const int64_t lastBlock = (offset + availableBytes - 1) / static_cast<int64_t>(m_config.blockSize);
 
-  TrackDemandRead(firstBlock, lastBlock);
+  if (m_config.prefetch)
+    TrackDemandRead(firstBlock, lastBlock);
 
   int64_t copied = 0;
   for (int64_t blockIndex = firstBlock; blockIndex <= lastBlock; ++blockIndex)
@@ -308,6 +316,9 @@ void CBlurayIsoCache::TrackDemandRead(int64_t firstBlock, int64_t lastBlock)
 
 void CBlurayIsoCache::NotifySeek()
 {
+  if (!m_config.prefetch)
+    return;
+
   {
     std::lock_guard<std::mutex> lk(m_prefetchMutex);
     ResetPrefetchLocked();

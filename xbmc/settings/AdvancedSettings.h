@@ -449,6 +449,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     // Bluray ISO cache settings
     unsigned int m_blurayIsoCacheBlockSize;
     unsigned int m_blurayIsoCacheMaxBytes;
+    bool m_blurayIsoCachePrefetch;
 
     // CurlFile LRU cache settings (HTTP ISO streaming)
     unsigned int m_curlFileLRUCacheBlockSize;

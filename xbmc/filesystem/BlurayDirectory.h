@@ -11,6 +11,7 @@
 #include "IDirectory.h"
 #include "URL.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -61,6 +62,8 @@ private:
   BLURAY*       m_bd = nullptr;
   bool          m_blurayInitialized = false;
   std::string m_realPath;
+  std::atomic<bool> m_disposing{false};
+  std::mutex m_isoCacheMutex;
   std::shared_ptr<CBlurayIsoCache> m_isoCache;
   std::shared_ptr<XFILE::CFile> m_isoFile;
   std::mutex m_isoReadLock;

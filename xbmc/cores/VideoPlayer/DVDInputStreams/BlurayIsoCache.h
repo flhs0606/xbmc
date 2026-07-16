@@ -32,6 +32,7 @@ public:
   {
     size_t blockSize{1024 * 1024};
     size_t maxBytes{128 * 1024 * 1024};
+    bool prefetch{false};
   };
 
   using ReadCallback = std::function<int64_t(int64_t offset, uint8_t* buffer, size_t size)>;
