@@ -101,9 +101,8 @@ enum DOVIMode : int
 enum DOVICMv40Mode : int
 {
   CMV40_NONE = 0,
-  CMV40_NO_L2,
   CMV40_ALWAYS,
-  CMV40_AUTO
+  CMV40_SMART
 };
 
 class CBitstreamParser
@@ -139,9 +138,14 @@ public:
     if (m_convert_dovi != value) InvalidateDoViCache();
     m_convert_dovi = value; 
   }
-  void SetAppendCMv40(enum DOVICMv40Mode value) { 
+  void SetAppendCMv40(enum DOVICMv40Mode value) {
     if (m_append_cmv40 != value) InvalidateDoViCache();
-    m_append_cmv40 = value; 
+    m_append_cmv40 = value;
+    m_smart_last_effective = DOVICMv40Mode::CMV40_SMART;
+  }
+  void SetSmartBypassDisplayNits(int nits) {
+    if (m_smart_display_nits != nits) InvalidateDoViCache();
+    m_smart_display_nits = nits;
   }
   void SetConvertHdr10Plus(bool value) { m_convert_Hdr10Plus = value; }
   void SetPreferCovertHdr10Plus(bool value) { m_prefer_Hdr10Plus_conversion = value; }
@@ -230,8 +234,10 @@ protected:
   StreamHdrType m_initial_hdrType;
   bool m_start_decode;
   enum DOVIMode m_convert_dovi;
-  enum DOVICMv40Mode m_append_cmv40;
-  uint8_t m_cmv40_trim{1};
+  enum DOVICMv40Mode m_append_cmv40{DOVICMv40Mode::CMV40_NONE};
+  int m_smart_display_nits{0};
+  static constexpr int SMART_CMV40_THRESHOLD_PCT = 20;
+  DOVICMv40Mode m_smart_last_effective{DOVICMv40Mode::CMV40_SMART};
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   bool m_convert_Hdr10Plus;

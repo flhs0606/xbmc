@@ -128,6 +128,7 @@ private:
   void ClearBitstreamCommon(void);
   void UpdateAppendCMv40SettingCache();
   void ApplyDynamicDoViSettings();
+  void PushCMv40Settings(DOVICMv40Mode mode);
   void PopFrontPackage();
   bool IsDvP7FelStream() const;
   FelSeekFixSettings GetFelSeekFixSettings() const;
@@ -148,6 +149,7 @@ private:
 
   std::atomic<int> m_appendCMv40ModeSetting{static_cast<int>(DOVICMv40Mode::CMV40_NONE)};
   DOVICMv40Mode m_appendCMv40ModeApplied{DOVICMv40Mode::CMV40_NONE};
+  std::atomic<int> m_smartDisplayNits{0};
   bool m_settingsCallbackRegistered{false};
 
   // DV FEL seek/resume: FEL seek fix fallback to MEL if BL/EL timing is badly mismatched.

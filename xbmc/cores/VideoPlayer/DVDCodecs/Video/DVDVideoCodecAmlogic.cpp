@@ -92,7 +92,9 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
   {
     if (const auto settings = settingsComponent->GetSettings())
     {
-      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND});
+      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                                       CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,
+                                       CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM});
       m_settingsCallbackRegistered = true;
     }
   }
@@ -120,15 +122,26 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
   const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
   if (!settings) return;
 
-  m_appendCMv40ModeSetting.store(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND));
+  int appendCMv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  if (aml_dv_type() != DV_TYPE_DISPLAY_LED)
+    appendCMv40 = 0;
+
+  if (appendCMv40 != 0)
+  {
+    m_smartDisplayNits.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
+  }
+
+  m_appendCMv40ModeSetting.store(static_cast<int>(appendCMv40 != 0 ?
+      DOVICMv40Mode::CMV40_SMART : DOVICMv40Mode::CMV40_NONE));
 }
 
 void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
   if (!setting) return;
 
-  if (setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND)
+  if (setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)
     UpdateAppendCMv40SettingCache();
 }
 
@@ -139,11 +152,21 @@ void CDVDVideoCodecAmlogic::ApplyDynamicDoViSettings()
   const auto mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
   if (mode == m_appendCMv40ModeApplied) return;
 
-  m_bitstream->SetAppendCMv40(mode);
-  m_appendCMv40ModeApplied = mode;
+  PushCMv40Settings(mode);
 
   logM(LOGINFO, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 append mode changed to [{:d}]",
        static_cast<int>(mode));
+}
+
+void CDVDVideoCodecAmlogic::PushCMv40Settings(DOVICMv40Mode mode)
+{
+  if (mode == DOVICMv40Mode::CMV40_SMART)
+  {
+    m_bitstream->SetSmartBypassDisplayNits(m_smartDisplayNits.load());
+  }
+
+  m_bitstream->SetAppendCMv40(mode);
+  m_appendCMv40ModeApplied = mode;
 }
 
 bool CDVDVideoCodecAmlogic::IsDvP7FelStream() const
@@ -458,14 +481,16 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           auto cmv40Mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
           if (cmv40Mode != DOVICMv40Mode::CMV40_NONE)
           {
-            if (cmv40Mode == DOVICMv40Mode::CMV40_NO_L2)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - if CMv2.9 without L2 trims then CMv4.0 metadata block will be appended.");
-            else if (cmv40Mode != DOVICMv40Mode::CMV40_ALWAYS)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 metadata block will always be appended.");
-            else if (cmv40Mode != DOVICMv40Mode::CMV40_AUTO)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 metadata block will be appended automatically based on L2 and display max lum.");
-            m_bitstream->SetAppendCMv40(cmv40Mode);
-          }
+            if (cmv40Mode == DOVICMv40Mode::CMV40_SMART)
+            {
+              PushCMv40Settings(cmv40Mode);
+            }
+            else if (cmv40Mode != DOVICMv40Mode::CMV40_NONE)
+            {
+              m_bitstream->SetAppendCMv40(cmv40Mode);
+              m_appendCMv40ModeApplied = cmv40Mode;
+            }
+            logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - Smart CMv4.0 metadata append enabled.");
           m_appendCMv40ModeApplied = cmv40Mode;
 
           // Global Vivid disable: strip Vivid metadata regardless of priority.

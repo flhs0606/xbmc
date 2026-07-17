@@ -25311,7 +25311,7 @@ msgstr ""
 #. Help text for setting "CMv4.0 append setting" of label #50320
 #: system/settings/settings.xml
 msgctxt "#60321"
-msgid "Controls when CMv4.0 is appended to Dolby Vision profile 7 & 8 RPU during playback."
+msgid "Enables CoreELEC to add CMv4.0 metadata to Dolby Vision streams, improving HDR tone-mapping accuracy on TVs that support Display-LED. Only disable this if you see flickering, color shifts, or brightness anomalies."
 msgstr ""
 
 #. "CMv4.0 append"
@@ -25323,19 +25323,7 @@ msgstr ""
 #. "CMv4.0 append"
 #: system/settings/settings.xml
 msgctxt "#60323"
-msgid "CMv2.9 without L2 trims"
-msgstr ""
-
-#. "CMv4.0 append"
-#: system/settings/settings.xml
-msgctxt "#60324"
-msgid "Always"
-msgstr ""
-
-#. "CMv4.0 append"
-#: system/settings/settings.xml
-msgctxt "#60325"
-msgid "Auto"
+msgid "On"
 msgstr ""
 
 #. "Dolby Vision Display LL Dolby VSVDB Limit"

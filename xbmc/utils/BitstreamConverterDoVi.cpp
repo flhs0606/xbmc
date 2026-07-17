@@ -7,12 +7,11 @@
  */
 
 #include "BitstreamConverter.h"
-#include "BitstreamIoWriter.h"
-#include "Crc32.h"
 
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "utils/StringUtils.h"
+#include "utils/HDR10PlusConvert.h"
 #include "utils/log.h"
 
 #include "settings/Settings.h"
@@ -258,190 +257,6 @@ void GetDoviRpuInfo(uint8_t* nalBuf,
   dovi_rpu_free(opaque);
 }
 
-void AppendCMv40ExtensionBlock(BitstreamIoWriter& writer)
-{
-  // CM v4.0 extension metadata (allowed levels: 3, 8, 9, 10, 11, 254)
-  // -----------------------------------------------------------------
-  writer.write_ue(4);                         // (00101) num_ext_blocks
-  writer.byte_align();                        // dm_alignment_zero_bit
-
-  // Currently the extension block content is fixed, if we need for dynamic values in the future
-  // then need to gate and check changes and recreate for each change, see HDR10+ dynamic metadata handling for example.
-  static const std::vector<uint8_t> cached_ext_blocks = []() {
-    BitstreamIoWriter cacheWriter;
-
-    // L3 ------------ (53 bits)
-    cacheWriter.write_ue(5);                         // (00110)          length_bytes (payload only)
-    cacheWriter.write_n<uint8_t>(3, 8);              // (00000011)       level
-    cacheWriter.write_n<uint16_t>(2048, 12);         // (100000000000)   min_pq_offset
-    cacheWriter.write_n<uint16_t>(2048, 12);         // (100000000000)   max_pq_offset
-    cacheWriter.write_n<uint16_t>(2048, 12);         // (100000000000)   avg_pq_offset
-    cacheWriter.write_n<uint8_t>(0, 4);              // (0000)           alignment of 4 bits. (40)
-
-    // L9 ------------ (19 bits)
-    cacheWriter.write_ue(1);                         // (010)            length_bytes (payload only)
-    cacheWriter.write_n<uint8_t>(9, 8);              // (00001001)       level
-    cacheWriter.write_n<uint8_t>(0, 8);              // (00000000)       source_primary_index
-
-    // L11 ----------- (45 bits)
-    cacheWriter.write_ue(4);                         // (00101)          length_bytes (payload only)
-    cacheWriter.write_n<uint8_t>(11, 8);             // (00001011)       level
-    cacheWriter.write_n<uint8_t>(1, 8);              // (00000001)       content_type
-    cacheWriter.write_n<uint8_t>(0, 8);              // (00000000)       whitepoint
-    cacheWriter.write_n<uint8_t>(0, 8);              // (00000000)       reserved_byte2
-    cacheWriter.write_n<uint8_t>(0, 8);              // (00000000)       reserved_byte3
-
-    // L254 ---------- (27 bits)
-    cacheWriter.write_ue(2);                         // (011)            length_bytes (payload only)
-    cacheWriter.write_n<uint8_t>(254, 8);            // (11111110)       level
-    cacheWriter.write_n<uint8_t>(0, 8);              // (00000000)       dm_mode
-    cacheWriter.write_n<uint8_t>(2, 8);              // (00000010)       dm_version_index
-
-    cacheWriter.byte_align();                        // ext_dm_alignment_zero_bit
-    return cacheWriter.into_inner();
-  }();
-
-  writer.write_bytes(cached_ext_blocks.data(), cached_ext_blocks.size());
-}
-
-bool PayloadSize(const std::vector<uint8_t>& rbsp, size_t& payloadSize)
-{
-  if (rbsp.size() < 6) return false;
-
-  if (rbsp.back() != 0x80) return false;
-
-  payloadSize = rbsp.size() - 5;
-  if (payloadSize <= 1) return false;
-
-  return true;
-}
-
-// Build a NAL with CMv4.0 extension inserted at a specific offset.
-// trimBits = number of rpu_alignment_zero_bits to strip from the end of the payload
-// before inserting the CMv4.0 extension data.
-bool BuildCMv40Nalu(const std::vector<uint8_t>& rbsp,
-                    size_t payloadSize,
-                    uint8_t nalHeader0,
-                    uint8_t nalHeader1,
-                    int trimBits,
-                    std::vector<uint8_t>& naluOut)
-{
-  const int contentBits = (8 - trimBits);
-
-  if ((contentBits <= 0) || (payloadSize < 1)) return false;
-
-  BitstreamIoWriter writer(payloadSize + 26); // extension (21) + CRC32 (4) + FINAL_BYTE (1)
-
-  // Copy all complete payload bytes except the last one
-  if (payloadSize > 1)
-    writer.write_bytes(rbsp.data(), payloadSize - 1);
-
-  // Copy only the content bits of the last payload byte (strip alignment zeros)
-  const uint8_t lastByte = rbsp[payloadSize - 1];
-  writer.write_n<uint8_t>(static_cast<uint8_t>(lastByte >> trimBits), contentBits);
-
-  // Append CMv4.0 extension at exact bit position (no alignment gap)
-  AppendCMv40ExtensionBlock(writer);
-
-  // rpu_alignment_zero_bit: pad to byte boundary
-  writer.byte_align();
-
-  writer.write_n<uint32_t>(Crc32::Compute(writer.as_slice() + 1, writer.as_slice_size() - 1), 32);
-  writer.write_n<uint8_t>(0x80, 8);  // FINAL_BYTE
-
-  std::vector<uint8_t> newRbsp = writer.into_inner();
-
-  HevcAddStartCodeEmulationPrevention3Byte(newRbsp);
-
-  naluOut.clear();
-  naluOut.reserve(2 + newRbsp.size());
-  naluOut.push_back(nalHeader0);
-  naluOut.push_back(nalHeader1);
-  naluOut.insert(naluOut.end(), newRbsp.begin(), newRbsp.end());
-
-  return true;
-}
-
-// Parse a candidate NAL with libdovi and check that L254 is present.
-// Returns the opaque RPU handle on success (caller must free), nullptr on failure.
-DoviRpuOpaque* ParseAndValidateCmv40Nalu(const std::vector<uint8_t>& nalu)
-{
-  DoviRpuOpaque* opaque = dovi_parse_unspec62_nalu(nalu.data(), nalu.size());
-  if (!opaque)
-    return nullptr;
-
-  const DoviVdrDmData* dm = dovi_rpu_get_vdr_dm_data(opaque);
-  const bool valid = (dm && dm->dm_data.level254);
-  dovi_rpu_free_vdr_dm_data(dm);
-
-  if (valid)
-    return opaque;
-
-  dovi_rpu_free(opaque);
-  return nullptr;
-}
-
-// Append CMv4.0 extension to an RPU NAL. On success, populates |out| with the
-// new NAL and returns the validated DoviRpuOpaque* (caller must free).
-// Returns nullptr on failure.
-//
-// |trim| is a hint for the number of rpu_alignment_zero_bits to strip.
-// Most commonly 1 (L6 is 79 bits → 1 bit padding). Updated on success.
-DoviRpuOpaque* AppendCMv40ToRpuNalu(uint8_t* nalBuf,
-                                    int32_t nalSize,
-                                    std::vector<uint8_t>& out,
-                                    uint8_t& trim)
-{
-  if (!nalBuf || (nalSize <= 2)) return nullptr;
-
-  const uint8_t nal0 = nalBuf[0];
-  const uint8_t nal1 = nalBuf[1];
-
-  std::vector<uint8_t> rbsp;
-  HevcClearStartCodeEmulationPrevention3Byte(nalBuf + 2, static_cast<size_t>(nalSize - 2), rbsp);
-
-  if (rbsp.size() < 2) return nullptr;
-
-  size_t payloadSize = 0;
-  if (!PayloadSize(rbsp, payloadSize)) return nullptr;
-
-  // The RPU bitstream has rpu_alignment_zero_bit padding (0-7 bits) between the
-  // CMv2.9 DM data section end and the CRC. We must strip them before
-  // inserting the CMv4.0 extension.
-  //
-  // |trim| hints where to start (most commonly 1 for L6's 79 bits).
-  // If the LSB at trim is a 1-bit (data), the payload is already byte-aligned,
-  // so skip straight to 0 instead of searching upward through all values.
-  std::vector<uint8_t> naluOut;
-
-  if (trim > 0 && (rbsp[payloadSize - 1] & ((1 << trim) - 1))) trim = 0;
-
-  for (uint8_t i = 0; i <= 7; ++i)
-  {
-    const uint8_t trimBits = static_cast<uint8_t>((trim + i) % 8);
-
-    naluOut.clear();
-    if (BuildCMv40Nalu(rbsp, payloadSize, nal0, nal1, trimBits, naluOut))
-    {
-      DoviRpuOpaque* opaque = ParseAndValidateCmv40Nalu(naluOut);
-      if (opaque)
-      {
-        if (trim != trimBits)
-        {
-          logM(LOGINFO, "CBitstreamConverterDoVi",
-                        "CMv4 alignment: last_byte=0x{:02X} padding={}",
-                        rbsp[payloadSize - 1], trimBits);
-          trim = trimBits;
-        }
-        out.swap(naluOut);
-        return opaque;
-      }
-    }
-  }
-
-  return nullptr;
-}
-
 inline DOVIELType GetElTypeFromHeader(const DoviRpuDataHeader* header)
 {
   if (header && ((header->guessed_profile == 4) || (header->guessed_profile == 7)) &&
@@ -499,36 +314,30 @@ inline void ConvertDoVi(DOVIMode convertMode,
   vdrDmData = dovi_rpu_get_vdr_dm_data(opaque);
 }
 
-inline void AppendCMv40(DOVICMv40Mode cmv40Mode,
-                        const DoviRpuDataHeader* header,
+inline bool AppendCMv40(DoviRpuOpaque* opaque,
                         const DoviVdrDmData* vdrDmData,
+                        bool forceNoL2Check,
                         uint8_t*& nalBuf,
                         int32_t& nalSize,
-                        std::vector<uint8_t>& nalu,
-                        DoviRpuOpaque*& opaque,
-                        uint8_t& trim)
+                        const DoviData*& rpuData)
 {
-  if (!header || !vdrDmData) return;
+  if (!vdrDmData || !opaque) return false;
 
-  DOVIStreamMetadata dovi_stream_metadata;
-  dovi_stream_metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViStreamMetadata();
-  int source_max_nits = max_pq_to_nits(static_cast<int>(dovi_stream_metadata.source_max_pq));
-  int max_lum_nits_value(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
-  bool is_displayML_higher_sourceMDL = (max_lum_nits_value >= source_max_nits);
-  int dv_type(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE));
+  if (vdrDmData->dm_data.level254) return false;
 
-  const bool hasLevel254 = (vdrDmData->dm_data.level254 != nullptr);
-  if (!((((cmv40Mode == DOVICMv40Mode::CMV40_ALWAYS) && !hasLevel254) ||
-         ((cmv40Mode == DOVICMv40Mode::CMV40_AUTO) && (IsCMv29NoL2(header, vdrDmData) || (!hasLevel254 && is_displayML_higher_sourceMDL))) ||
-         ((cmv40Mode == DOVICMv40Mode::CMV40_NO_L2) && IsCMv29NoL2(header, vdrDmData))) &&
-        (dv_type == 0))) return;
+  // Caller passes forceNoL2Check=true when the Smart decision resolved to
+  // "append unconditionally"; otherwise fall back to the no-L2 gate.
+  if (!forceNoL2Check && vdrDmData->dm_data.level2.len != 0) return false;
 
-  opaque = AppendCMv40ToRpuNalu(nalBuf, nalSize, nalu, trim);
-  if (opaque)
-  {
-    nalBuf = nalu.data();
-    nalSize = static_cast<int32_t>(nalu.size());
-  }
+  if (dovi_rpu_add_cmv40_safe_default_metadata(opaque) != 1)
+    return false;
+
+  rpuData = dovi_write_unspec62_nalu(opaque);
+  if (!rpuData) return false;
+
+  nalBuf = const_cast<uint8_t*>(rpuData->data);
+  nalSize = static_cast<int32_t>(rpuData->len);
+  return true;
 }
 
 inline void InjectPtsForFel(DOVIMode convertMode,
@@ -573,7 +382,7 @@ void CBitstreamConverter::ProcessDoViRpu(
   double pts)
 {
   const DoviData* rpuData = nullptr;
-  DoviRpuOpaque* appendOpaque = nullptr;
+  bool appended = false;
   std::vector<uint8_t> nalu;
 
   // Optimization: If the input RPU NAL is exactly identical to the previous frame's RPU NAL,
@@ -611,19 +420,47 @@ void CBitstreamConverter::ProcessDoViRpu(
                   nalSize,
                   rpuData);
 
-    if (m_append_cmv40 != DOVICMv40Mode::CMV40_NONE)
-      AppendCMv40(m_append_cmv40,
-                  header,
-                  vdrDmData,
-                  nalBuf,
-                  nalSize,
-                  nalu,
-                  appendOpaque,
-                  m_cmv40_trim);
+    if (m_append_cmv40 != DOVICMv40Mode::CMV40_NONE &&
+        vdrDmData && !vdrDmData->dm_data.level254)
+    {
+      bool shouldAppend = true;
+      if (m_append_cmv40 == DOVICMv40Mode::CMV40_SMART)
+      {
+        const bool level2IsEmpty = (vdrDmData->dm_data.level2.len == 0);
+        const bool hasData = (m_smart_display_nits > 0 && vdrDmData->dm_data.level1);
+        const int contentNits = hasData
+            ? max_pq_to_nits(static_cast<int>(vdrDmData->dm_data.level1->max_pq))
+            : 0;
+        const int threshold = m_smart_display_nits * (100 + SMART_CMV40_THRESHOLD_PCT) / 100;
+        const bool bypass = !level2IsEmpty && hasData && (contentNits > threshold);
+        shouldAppend = !bypass;
+        const DOVICMv40Mode effectiveMode =
+            bypass ? DOVICMv40Mode::CMV40_NONE : DOVICMv40Mode::CMV40_ALWAYS;
 
-    // Use the appendOpaque from the append CMv4.0 if available
-    DoviRpuOpaque* metadataOpaque = appendOpaque ? appendOpaque : opaque;
-    PopulateDoviRpuInfo(metadataOpaque,
+        if (effectiveMode != m_smart_last_effective)
+        {
+          std::string detail;
+          if (level2IsEmpty)
+            detail = "no L2 trims, appending CMv4.0";
+          else if (!hasData)
+            detail = "display nits unavailable, defaulting to append";
+          else
+            detail = fmt::format(
+                "content {}nits display {}nits threshold {}nits ({}%) -> {}",
+                contentNits, m_smart_display_nits, threshold, SMART_CMV40_THRESHOLD_PCT,
+                bypass ? "bypass (no append)" : "append CMv4.0");
+          logM(LOGINFO, "CBitstreamConverterDoVi",
+               "Smart CMv4.0: {} (decision changed; evaluated per-frame)", detail);
+          m_smart_last_effective = effectiveMode;
+        }
+      }
+
+      if (shouldAppend)
+        appended = AppendCMv40(opaque, vdrDmData, /*forceNoL2Check=*/true,
+                               nalBuf, nalSize, rpuData);
+    }
+
+    PopulateDoviRpuInfo(opaque,
                         m_first_frame,
                         m_hints.dovi_el_type,
                         m_hints.dovi,
@@ -631,15 +468,12 @@ void CBitstreamConverter::ProcessDoViRpu(
                         m_dataCacheCore,
                         &m_cached_dovi_frame_metadata);
 
+    if (appended && m_first_frame)
+      logM(LOGINFO, "CBitstreamConverterDoVi", "CMv4.0 extension appended to RPU");
+
     dovi_rpu_free_header(header);
     dovi_rpu_free_vdr_dm_data(vdrDmData);
     dovi_rpu_free(opaque);
-    if (appendOpaque)
-    {
-      dovi_rpu_free(appendOpaque);
-      if (m_first_frame)
-        logM(LOGINFO, "CBitstreamConverterDoVi", "CMv4.0 extension appended to RPU");
-    }
 
     // Update cache with the newly calculated modified NAL out for the next frame
     m_cached_dovi_rpu_out_nal.assign(nalBuf, nalBuf + nalSize);

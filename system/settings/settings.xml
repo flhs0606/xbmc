@@ -4426,10 +4426,8 @@
           </dependencies>
           <constraints>
             <options>
-              <option label="60322">0</option> <!-- None (off) -->
-              <option label="60323">1</option> <!-- No L2 -->
-              <option label="60324">2</option> <!-- Always -->
-              <option label="60325">3</option> <!-- Auto -->
+              <option label="60322">0</option> <!-- Off -->
+              <option label="60323">1</option> <!-- On -->
             </options>
           </constraints>
           <control type="spinner" format="string" />
