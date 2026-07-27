@@ -101,7 +101,6 @@ enum DOVIMode : int
 enum DOVICMv40Mode : int
 {
   CMV40_NONE = 0,
-  CMV40_ALWAYS,
   CMV40_SMART
 };
 
@@ -139,9 +138,11 @@ public:
     m_convert_dovi = value; 
   }
   void SetAppendCMv40(enum DOVICMv40Mode value) {
-    if (m_append_cmv40 != value) InvalidateDoViCache();
-    m_append_cmv40 = value;
-    m_smart_last_effective = DOVICMv40Mode::CMV40_SMART;
+    if (m_append_cmv40 != value)
+    {
+      InvalidateDoViCache();
+      m_append_cmv40 = value;
+    }
   }
   void SetSmartBypassDisplayNits(int nits) {
     if (m_smart_display_nits != nits) InvalidateDoViCache();
@@ -237,7 +238,9 @@ protected:
   enum DOVICMv40Mode m_append_cmv40{DOVICMv40Mode::CMV40_NONE};
   int m_smart_display_nits{0};
   static constexpr int SMART_CMV40_THRESHOLD_PCT = 20;
-  DOVICMv40Mode m_smart_last_effective{DOVICMv40Mode::CMV40_SMART};
+  // Sentinel outside the effective {NONE,SMART} set so the first-frame
+  // "decision changed" log fires unconditionally.
+  DOVICMv40Mode m_smart_last_effective{DOVICMv40Mode::CMV40_NONE};
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   bool m_convert_Hdr10Plus;

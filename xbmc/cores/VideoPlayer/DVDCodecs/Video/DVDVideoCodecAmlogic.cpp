@@ -478,20 +478,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
         if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
         {
-          auto cmv40Mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
+          const auto cmv40Mode =
+              static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
           if (cmv40Mode != DOVICMv40Mode::CMV40_NONE)
-          {
-            if (cmv40Mode == DOVICMv40Mode::CMV40_SMART)
-            {
-              PushCMv40Settings(cmv40Mode);
-            }
-            else if (cmv40Mode != DOVICMv40Mode::CMV40_NONE)
-            {
-              m_bitstream->SetAppendCMv40(cmv40Mode);
-              m_appendCMv40ModeApplied = cmv40Mode;
-            }
-            logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - Smart CMv4.0 metadata append enabled.");
-          m_appendCMv40ModeApplied = cmv40Mode;
+            PushCMv40Settings(cmv40Mode);
 
           // Global Vivid disable: strip Vivid metadata regardless of priority.
           // Only applies when Vivid does NOT have priority (dual_priority != 2).

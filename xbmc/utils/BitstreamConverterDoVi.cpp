@@ -316,7 +316,6 @@ inline void ConvertDoVi(DOVIMode convertMode,
 
 inline bool AppendCMv40(DoviRpuOpaque* opaque,
                         const DoviVdrDmData* vdrDmData,
-                        bool forceNoL2Check,
                         uint8_t*& nalBuf,
                         int32_t& nalSize,
                         const DoviData*& rpuData)
@@ -325,10 +324,9 @@ inline bool AppendCMv40(DoviRpuOpaque* opaque,
 
   if (vdrDmData->dm_data.level254) return false;
 
-  // Caller passes forceNoL2Check=true when the Smart decision resolved to
-  // "append unconditionally"; otherwise fall back to the no-L2 gate.
-  if (!forceNoL2Check && vdrDmData->dm_data.level2.len != 0) return false;
-
+  // Caller has already gated on `shouldAppend`, which encodes the L2 trim
+  // decision (no-L2 → append unconditionally; L2 + low nits → append;
+  // L2 + high nits → bypass). This helper is a writer, not a gate.
   if (dovi_rpu_add_cmv40_safe_default_metadata(opaque) != 1)
     return false;
 
@@ -423,19 +421,19 @@ void CBitstreamConverter::ProcessDoViRpu(
     if (m_append_cmv40 != DOVICMv40Mode::CMV40_NONE &&
         vdrDmData && !vdrDmData->dm_data.level254)
     {
-      bool shouldAppend = true;
+      const bool level2IsEmpty = (vdrDmData->dm_data.level2.len == 0);
+      bool shouldAppend = level2IsEmpty;
       if (m_append_cmv40 == DOVICMv40Mode::CMV40_SMART)
       {
-        const bool level2IsEmpty = (vdrDmData->dm_data.level2.len == 0);
         const bool hasData = (m_smart_display_nits > 0 && vdrDmData->dm_data.level1);
         const int contentNits = hasData
             ? max_pq_to_nits(static_cast<int>(vdrDmData->dm_data.level1->max_pq))
             : 0;
         const int threshold = m_smart_display_nits * (100 + SMART_CMV40_THRESHOLD_PCT) / 100;
         const bool bypass = !level2IsEmpty && hasData && (contentNits > threshold);
-        shouldAppend = !bypass;
+        shouldAppend = level2IsEmpty || !bypass;
         const DOVICMv40Mode effectiveMode =
-            bypass ? DOVICMv40Mode::CMV40_NONE : DOVICMv40Mode::CMV40_ALWAYS;
+            bypass ? DOVICMv40Mode::CMV40_NONE : DOVICMv40Mode::CMV40_SMART;
 
         if (effectiveMode != m_smart_last_effective)
         {
@@ -456,8 +454,7 @@ void CBitstreamConverter::ProcessDoViRpu(
       }
 
       if (shouldAppend)
-        appended = AppendCMv40(opaque, vdrDmData, /*forceNoL2Check=*/true,
-                               nalBuf, nalSize, rpuData);
+        appended = AppendCMv40(opaque, vdrDmData, nalBuf, nalSize, rpuData);
     }
 
     PopulateDoviRpuInfo(opaque,

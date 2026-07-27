@@ -137,16 +137,6 @@ const AVDOVIDecoderConfigurationRecord* GetStreamDoviConf(const AVCodecParameter
   return sd ? reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sd->data) : nullptr;
 }
 
-// Some encoders mislabel HLG streams as AVCOL_TRC_BT2020_10 with BT.2020
-// primaries. This is the single source of truth: it is the only place that
-// recognises the "BT.2020-10 transfer + BT.2020 primaries" combination as
-// HLG. DetermineHdrType uses it to set HDR_TYPE_HLG, and AddStream uses it
-// to remap colorTransferCharacteristic so AMLCodec activates the HLG EOTF.
-bool IsMislabeledHlg(const AVCodecParameters* codecpar)
-{
-  return codecpar->color_trc == AVCOL_TRC_BT2020_10 &&
-         codecpar->color_primaries == AVCOL_PRI_BT2020;
-}
 } // namespace
 
 std::string CDemuxStreamAudioFFmpeg::GetStreamName()
@@ -1821,14 +1811,6 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         st->colorRange = pStream->codecpar->color_range;
         st->hdr_type = DetermineHdrType(pStream);
 
-        // Remap mislabeled HLG to AVCOL_TRC_ARIB_STD_B67 so the Amlogic hardware driver
-        // activates HLG EOTF (AMLCodec passes this value verbatim). DetermineHdrType
-        // already classified it as HDR_TYPE_HLG via IsMislabeledHlg().
-        if (IsMislabeledHlg(pStream->codecpar))
-        {
-          st->colorTransferCharacteristic = AVCOL_TRC_ARIB_STD_B67;
-        }
-
         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
         const AVPacketSideData* sideData = nullptr;
 
@@ -2889,9 +2871,6 @@ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
   else if (pStream->codecpar->color_trc == AVCOL_TRC_SMPTE2084) // HDR10
     hdrType = StreamHdrType::HDR_TYPE_HDR10;
   else if (pStream->codecpar->color_trc == AVCOL_TRC_ARIB_STD_B67) // HLG
-    hdrType = StreamHdrType::HDR_TYPE_HLG;
-  // BT.2020-10 transfer may be used for HLG content mislabeled by old encoders
-  else if (IsMislabeledHlg(pStream->codecpar))
     hdrType = StreamHdrType::HDR_TYPE_HLG;
   // file could be SMPTE2086 which FFmpeg currently returns as unknown
   // so use the presence of static metadata to detect it
