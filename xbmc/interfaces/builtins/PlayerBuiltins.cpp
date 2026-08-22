@@ -185,7 +185,10 @@ static int PlayerControl(const std::vector<std::string>& params)
       if (playSpeed > 32 || playSpeed < -32)
         playSpeed = 1;
 
-      appPlayer->SetPlaySpeed(playSpeed);
+      if (playSpeed > 0.0f)
+        appPlayer->SetTempo(playSpeed);
+      else
+        appPlayer->SetPlaySpeed(playSpeed);
     }
   }
   else if (paramlow == "tempoup" || paramlow == "tempodown")

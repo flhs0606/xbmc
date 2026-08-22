@@ -498,8 +498,40 @@ void CVideoPlayerAudio::Process()
       double speed = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio - CDVDMsg::PLAYER_SETSPEED: {:f} last: {:d}", speed, m_speed);
 
-      if (m_processInfo.IsTempoAllowed(static_cast<float>(speed)/DVD_PLAYSPEED_NORMAL))
+      const float tempo = static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL;
+      const bool tempoAllowed = m_processInfo.IsTempoAllowed(tempo);
+      const bool tempoPlayback = speed > DVD_PLAYSPEED_NORMAL && tempoAllowed;
+      const int lastSpeed = m_speed;
+
+      if (tempoPlayback)
       {
+        m_speed = static_cast<int>(speed);
+        m_synctype = SYNC_RESAMPLE;
+
+        // Tempo playback requires decoded PCM so ActiveAE can resample it.
+        if (SwitchCodecIfNeeded())
+        {
+          m_audioSink.Flush();
+          m_stalled = true;
+          m_audioClock = 0;
+          m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+        }
+
+        SetSyncType(m_pAudioCodec && m_pAudioCodec->NeedPassthrough());
+        if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC && speed != lastSpeed)
+        {
+          m_audioSink.Resume();
+          m_stalled = false;
+        }
+      }
+      else if (tempoAllowed)
+      {
+        if (speed == DVD_PLAYSPEED_NORMAL)
+        {
+          m_synctype = m_processInfo.IsRealtimeStream() ? SYNC_RESAMPLE : SYNC_DISCON;
+          SetSyncType(m_pAudioCodec && m_pAudioCodec->NeedPassthrough());
+        }
+
         if (speed != m_speed)
         {
           if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
@@ -508,12 +540,13 @@ void CVideoPlayerAudio::Process()
             m_stalled = false;
           }
         }
+        m_speed = (int)speed;
       }
       else
       {
         m_audioSink.Pause();
+        m_speed = (int)speed;
       }
-      m_speed = (int)speed;
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {

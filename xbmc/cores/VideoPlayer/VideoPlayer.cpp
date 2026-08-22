@@ -2253,7 +2253,8 @@ void CVideoPlayer::HandlePlaySpeed()
   }
 
   // handle ff/rw
-  if (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE)
+  if (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE &&
+      (m_playSpeed < 0 || m_processInfo->GetNewTempo() == 1.0f))
   {
     if (isInMenu)
     {
@@ -2399,15 +2400,6 @@ void CVideoPlayer::HandlePlaySpeed()
     }
   }
 
-  // reset tempo
-  if (!m_State.cantempo)
-  {
-    float currentTempo = m_processInfo->GetNewTempo();
-    if (currentTempo != 1.0f)
-    {
-      SetTempo(1.0f);
-    }
-  }
 }
 
 bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
@@ -3345,6 +3337,12 @@ void CVideoPlayer::SetPlaySpeed(int speed)
 {
   if (IsPlaying())
   {
+    if (speed == DVD_PLAYSPEED_NORMAL && m_processInfo->GetNewTempo() != 1.0f)
+    {
+      SetTempo(1.0f);
+      return;
+    }
+
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, false };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
   }
@@ -3755,6 +3753,7 @@ void CVideoPlayer::SetTempo(float tempo)
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
 
     m_processInfo->SetNewTempo(tempo);
+    m_processInfo->SetNewSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
   }
 }
 
@@ -5213,8 +5212,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     bool realtime = m_pInputStream->IsRealtime();
 
-    state.cantempo = false;
-
+    state.cantempo = m_HasAudio && state.canseek;
     m_processInfo->SetStateRealtime(realtime);
   }
 
