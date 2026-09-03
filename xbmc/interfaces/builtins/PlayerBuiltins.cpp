@@ -180,7 +180,22 @@ static int PlayerControl(const std::vector<std::string>& params)
           playSpeed = 1;
       }
       else
-        playSpeed *= 2;
+      {
+        // Forward steps through the audio-preserving tempo preset list so each
+        // press goes 1x -> 1.25x -> 1.5x -> 2x instead of doubling through the
+        // silent trickplay speeds (4x/8x/...).
+        static constexpr float tempoPresets[] = { 1.0f, 1.25f, 1.5f, 2.0f };
+        float nextSpeed = tempoPresets[std::size(tempoPresets) - 1];
+        for (float preset : tempoPresets)
+        {
+          if (preset > playSpeed + 0.01f)
+          {
+            nextSpeed = preset;
+            break;
+          }
+        }
+        playSpeed = nextSpeed;
+      }
 
       if (playSpeed > 32 || playSpeed < -32)
         playSpeed = 1;
