@@ -3752,8 +3752,12 @@ void CVideoPlayer::SetTempo(float tempo)
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, true };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
 
-    m_processInfo->SetNewTempo(tempo);
-    m_processInfo->SetNewSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
+    // Use the full setters (not SetNewTempo/SetNewSpeed) so CProcessInfo's
+    // m_tempo/m_speed are also updated. Otherwise the cache keeps the stale
+    // m_tempo=1.0 and GetPlayTempo() always returns 1.0, which breaks
+    // AdvanceTempoStep (tempoup always resets to 1.1x).
+    m_processInfo->SetTempo(tempo);
+    m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
   }
 }
 
@@ -5212,7 +5216,6 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     bool realtime = m_pInputStream->IsRealtime();
 
-    state.cantempo = m_HasAudio && state.canseek;
     m_processInfo->SetStateRealtime(realtime);
   }
 
@@ -5270,6 +5273,12 @@ void CVideoPlayer::UpdatePlayState(double timeout)
     state.canseek = true;
     state.canpause = true;
   }
+
+  // Compute cantempo *after* state.canseek has its final value, so the
+  // PlayerBuiltins tempo(n) gate (which checks SupportsTempo) sees the
+  // correct capability state instead of the stale false from the
+  // initial clear above.
+  state.cantempo = m_HasAudio && state.canseek;
 
   m_processInfo->SetPlayTimes(state.startTime, state.time, state.timeMin, state.timeMax);
 
