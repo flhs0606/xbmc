@@ -192,10 +192,6 @@ void CAdvancedSettings::Initialize()
 
   m_blurayIsoCacheBlockSize = 1024 * 1024;
   m_blurayIsoCacheMaxBytes = 128 * 1024 * 1024;
-  m_blurayIsoCachePrefetch = false;
-
-  m_curlFileLRUCacheBlockSize = 1024 * 1024;
-  m_curlFileLRUCacheMaxBytes = 128 * 1024 * 1024;
 
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
@@ -913,14 +909,6 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
   {
     XMLUtils::GetUInt(pElement, "blocksize", m_blurayIsoCacheBlockSize, 2048, 1024 * 1024);
     XMLUtils::GetUInt(pElement, "maxbytes", m_blurayIsoCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
-    XMLUtils::GetBoolean(pElement, "prefetch", m_blurayIsoCachePrefetch);
-  }
-
-  pElement = pRootElement->FirstChildElement("curlfurlrucache");
-  if (pElement)
-  {
-    XMLUtils::GetUInt(pElement, "blocksize", m_curlFileLRUCacheBlockSize, 4096, 16 * 1024 * 1024);
-    XMLUtils::GetUInt(pElement, "maxbytes", m_curlFileLRUCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");

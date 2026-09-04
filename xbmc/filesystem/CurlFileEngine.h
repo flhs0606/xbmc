@@ -33,9 +33,14 @@ namespace XFILE
 /**
  * High-performance HTTP streaming engine for ISO disc images.
  *
+ * This engine only streams: a background worker pulls a linear 64MB ring
+ * buffer from the CDN. Block caching lives ABOVE it — CBlurayIsoSession reads
+ * whole 1MB blocks out of the ring and stores them in the process-global
+ * CBlurayBlockCache, shared with SMB/NFS readers of the same image.
+ *
  * Features:
  * - Background worker thread with RingBuffer for continuous prefetch
- * - Global LRU block cache (CCurlFileLRUCache) shared across file instances
+ * - Block-aligned reads (the caller's session asks for whole 1MB blocks)
  * - Deferred close: worker stays alive ~200ms for rapid open/close cycles
  * - Transparent 302 redirect handling with effective URL tracking
  * - Cross-domain credential protection for redirected URLs
@@ -70,6 +75,9 @@ public:
 
   // --- Stat (HEAD-only info fetch, no worker) ---
   int Stat(const CURL& url, struct __stat64* buffer);
+
+  // Per-instance id, printed in every engine log line.
+  int GetId() const { return m_id; }
 
 private:
   // --- Worker ---
@@ -109,6 +117,7 @@ private:
   // ------------------------------------------------------------------
   // State
   // ------------------------------------------------------------------
+  const int m_id;
   std::string m_fileUrl;       // Original URL
   std::string m_effectiveUrl;  // After 302 redirects
   std::string m_userName;
@@ -169,12 +178,8 @@ private:
 
   std::atomic<uint64_t> m_readRequests{0};
   std::atomic<uint64_t> m_requestedBytes{0};
-  std::atomic<uint64_t> m_lruHits{0};
-  std::atomic<uint64_t> m_lruMisses{0};
-  std::atomic<uint64_t> m_lruStores{0};
   std::atomic<uint64_t> m_workerStarts{0};
   std::atomic<uint64_t> m_workerResets{0};
-  std::atomic<uint64_t> m_downloadRangeRequests{0};
 };
 
 } // namespace XFILE

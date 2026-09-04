@@ -3430,7 +3430,9 @@ bool CFileItem::SkipLocalArt() const
        || IsParentFolder()
        || IsLiveTV()
        || IsPVRRecording()
-       || IsDVD());
+       || IsDVD()
+       || URIUtils::IsBluray(m_strPath)
+       || URIUtils::IsBluray(GetDynPath()));
 }
 
 std::string CFileItem::GetThumbHideIfUnwatched(const CFileItem* item) const

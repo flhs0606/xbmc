@@ -8,7 +8,7 @@
 
 #include "CurlFile.h"
 #include "CurlFileEngine.h"
-#include "CurlFileLRUCache.h"
+#include "BlurayBlockCache.h"
 
 #include "File.h"
 #include "ServiceBroker.h"

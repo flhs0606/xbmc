@@ -4,7 +4,7 @@ set(SOURCES AddonsDirectory.cpp
             CircularCache.cpp
             CurlFile.cpp
             CurlFileEngine.cpp
-            CurlFileLRUCache.cpp
+            BlurayBlockCache.cpp
             DAVCommon.cpp
             DAVDirectory.cpp
             DAVFile.cpp
@@ -67,7 +67,7 @@ set(HEADERS AddonsDirectory.h
             CircularCache.h
             CurlFile.h
             CurlFileEngine.h
-            CurlFileLRUCache.h
+            BlurayBlockCache.h
             DAVCommon.h
             DAVDirectory.h
             DAVFile.h
@@ -145,10 +145,12 @@ if(TARGET udfread::udfread)
 endif()
 
 if(BLURAY_FOUND)
-  list(APPEND SOURCES BlurayCallback.cpp
+  list(APPEND SOURCES BlurayIsoSession.cpp
+                      BlurayCallback.cpp
                       BlurayDirectory.cpp
                       BlurayFile.cpp)
-  list(APPEND HEADERS BlurayCallback.h
+  list(APPEND HEADERS BlurayIsoSession.h
+                      BlurayCallback.h
                       BlurayDirectory.h
                       BlurayFile.h)
 endif()

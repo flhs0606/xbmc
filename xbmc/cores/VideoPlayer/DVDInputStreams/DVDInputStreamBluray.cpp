@@ -8,7 +8,7 @@
 
 #include "DVDInputStreamBluray.h"
 
-#include "BlurayIsoCache.h"
+#include "filesystem/BlurayIsoSession.h"
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDInputStreamFile.h"
@@ -431,14 +431,8 @@ void CDVDInputStreamBluray::Close()
   CloseMVCDemux();
   FreeTitleInfo();
 
-  if (m_isoCacheFallbacks > 0)
   {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - ISO cache fallbacks {}", __FUNCTION__,
-              m_isoCacheFallbacks.load());
-  }
-
-  {
-    std::shared_ptr<CBlurayIsoCache> cache;
+    std::shared_ptr<CBlurayIsoSession> cache;
     {
       std::lock_guard<std::mutex> lock(m_isoCacheMutex);
       cache = std::move(m_isoCache);
@@ -516,7 +510,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_SEEK:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
-    NotifyIsoCacheSeek();
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
     //m_hold = HOLD_HELD;
@@ -540,7 +533,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_DISCONTINUITY:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
-    NotifyIsoCacheSeek();
     m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
     m_hold = HOLD_NONE;
     break;
@@ -775,38 +767,15 @@ int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
   if (m_closing.load(std::memory_order_acquire))
     return -1;
 
-  std::shared_ptr<CBlurayIsoCache> cache;
+  std::shared_ptr<CBlurayIsoSession> cache;
   {
     std::lock_guard<std::mutex> lock(m_isoCacheMutex);
     cache = m_isoCache;
   }
-  if (cache)
-  {
-    const int result = cache->ReadBlocks(buf, lba, num_blocks);
-    if (result >= 0)
-      return result;
+  if (!cache)
+    return -1;
 
-    ++m_isoCacheFallbacks;
-    if (m_isoCacheFallbacks <= 3 || (m_isoCacheFallbacks & (m_isoCacheFallbacks - 1)) == 0)
-    {
-      CLog::Log(LOGDEBUG,
-                "CDVDInputStreamBluray::{} - cached read failed at lba {} blocks {}, falling back ({})",
-                __FUNCTION__, lba, num_blocks, m_isoCacheFallbacks.load());
-    }
-  }
-
-  return ReadBlocksDirect(buf, lba, num_blocks);
-}
-
-void CDVDInputStreamBluray::NotifyIsoCacheSeek()
-{
-  std::shared_ptr<CBlurayIsoCache> cache;
-  {
-    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-    cache = m_isoCache;
-  }
-  if (cache)
-    cache->NotifySeek();
+  return cache->ReadBlocks(buf, lba, num_blocks);
 }
 
 static uint8_t  clamp(double v)
@@ -1043,8 +1012,6 @@ bool CDVDInputStreamBluray::PosTime(int ms)
   if(bd_seek_time(m_bd, ms * 90) < 0)
     return false;
 
-  NotifyIsoCacheSeek();
-
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
@@ -1077,8 +1044,6 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
     return false;
-
-  NotifyIsoCacheSeek();
 
   EMPTY_QUEUE(m_clipQueue);
   while (bd_get_event(m_bd, &m_event))
@@ -1518,7 +1483,7 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
             __FUNCTION__, CURL::GetRedacted(item.GetPath()));
 
   {
-    std::shared_ptr<CBlurayIsoCache> cache;
+    std::shared_ptr<CBlurayIsoSession> cache;
     {
       std::lock_guard<std::mutex> lock(m_isoCacheMutex);
       cache = std::move(m_isoCache);
@@ -1527,7 +1492,6 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
       cache->Stop();
   }
 
-  m_isoCacheFallbacks = 0;
   m_closing.store(false, std::memory_order_release);
 
   m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
@@ -1541,55 +1505,32 @@ bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
   }
 
   const int64_t sourceLength = m_pstream->GetLength();
-  const bool disableIsoCache = URIUtils::IsHTTP(item.GetPath(), true);
-  if (sourceLength > 0 && !disableIsoCache)
+  if (sourceLength > 0)
   {
     const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-    CBlurayIsoCache::Config cacheConfig{};
+    CBlurayIsoSession::Config cacheConfig{};
     cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
     cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
-    cacheConfig.prefetch = adv->m_blurayIsoCachePrefetch;
+
+    // Shared-store key must be the URL the stream actually opened (DVDInputStreamFile
+    // opens GetDynPath), not the container path (smb .strm when the image is http).
+    const std::string source = item.GetDynPath();
 
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - enable Bluray ISO cache for {} ({} bytes)",
-              __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength);
-    m_isoCache = std::make_shared<CBlurayIsoCache>(
-        sourceLength,
-      [this](int64_t offset, uint8_t* buffer, size_t size) { return ReadRaw(offset, buffer, size); },
-      cacheConfig);
+              __FUNCTION__, CURL::GetRedacted(source), sourceLength);
+    m_isoCache = std::make_shared<CBlurayIsoSession>(
+        source, sourceLength, sourceLength,
+        [this](int64_t offset, uint8_t* buffer, size_t size) { return ReadRaw(offset, buffer, size); },
+        cacheConfig);
     m_isoCache->Start();
   }
   else
   {
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - skip ISO cache for {} (source length {}, http iso {})",
-              __FUNCTION__, CURL::GetRedacted(item.GetPath()), sourceLength,
-              disableIsoCache ? "true" : "false");
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::{} - skip ISO cache for {} (source length {})",
+              __FUNCTION__, CURL::GetRedacted(item.GetDynPath()), sourceLength);
   }
 
   return true;
-}
-
-int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks)
-{
-  if (m_closing.load(std::memory_order_acquire))
-    return -1;
-
-  int result = -1;
-  int64_t offset = static_cast<int64_t>(lba) * 2048;
-
-  std::lock_guard lock(m_readBlocksLock);
-
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream || m_closing.load(std::memory_order_relaxed))
-    return -1;
-
-  if (lpstream->Seek(offset, SEEK_SET) >= 0)
-  {
-    int64_t size = static_cast<int64_t>(num_blocks) * 2048;
-    if (size <= std::numeric_limits<int>::max())
-      result = lpstream->Read(buf, static_cast<int>(size)) / 2048;
-  }
-
-  return result;
 }
 
 int64_t CDVDInputStreamBluray::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
@@ -1620,7 +1561,12 @@ int64_t CDVDInputStreamBluray::ReadRaw(int64_t offset, uint8_t* buffer, size_t s
     totalRead += static_cast<size_t>(chunk);
   }
 
-  return static_cast<int64_t>(totalRead > 0 ? totalRead : -1);
+  // NB: `totalRead > 0 ? totalRead : -1` would apply the usual arithmetic
+  // conversions and turn -1 into SIZE_MAX (0xFFFFFFFF on 32-bit ARM), which the
+  // caller then sees as a huge successful read instead of an error.
+  if (totalRead == 0)
+    return -1;
+  return static_cast<int64_t>(totalRead);
 }
 
 bool CDVDInputStreamBluray::GetState(std::string& xmlstate)

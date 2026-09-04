@@ -7,7 +7,7 @@
  */
 
 #include "CurlFileEngine.h"
-#include "CurlFileLRUCache.h"
+#include "BlurayBlockCache.h"
 #include "DllLibCurl.h"
 #include "File.h"
 #include "URL.h"
@@ -113,7 +113,10 @@ static void PoolReturn(CURL_HANDLE* h) {
   else g_curlInterface.easy_cleanup(h);
 }
 
-namespace { constexpr const char* LOG_TAG="CCurlFileEngine"; }
+namespace {
+constexpr const char* LOG_TAG="CCurlFileEngine";
+std::atomic<int> g_nextEngineId{1};
+}
 
 // =========================================================================
 // ISO 延迟关闭缓存 (Deferred Close Cache)
@@ -194,11 +197,10 @@ void CacheEngineForReuse(const std::string& urlKey, std::unique_ptr<CCurlFileEng
 // Construction / Destruction
 // =========================================================================
 
-CCurlFileEngine::CCurlFileEngine()
+CCurlFileEngine::CCurlFileEngine() : m_id(g_nextEngineId++)
 {
-  const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-  CCurlFileLRUCache::Instance().SetLimits(adv->m_curlFileLRUCacheBlockSize,
-                                          adv->m_curlFileLRUCacheMaxBytes);
+  // Block caching lives above this transport (CBlurayIsoSession -> CBlurayBlockCache);
+  // the engine only streams, so it sets no store limits here.
 }
 
 CCurlFileEngine::~CCurlFileEngine()
@@ -390,7 +392,6 @@ size_t CCurlFileEngine::CacheWriteCallback(void* c, size_t s, size_t n, void* u)
 bool CCurlFileEngine::DownloadRange(CURL_HANDLE* curl, int64_t start, int64_t length, std::vector<uint8_t>& buf)
 {
   if (!curl) return false;
-  ++m_downloadRangeRequests;
   buf.resize((size_t)length); int retries = 0; CURLcode res; long code = 0; char eb[CURL_ERROR_SIZE] = {};
   bool useEffectiveUrl = !m_effectiveUrl.empty();
   while (retries < m_netMaxRetries) {
@@ -491,7 +492,7 @@ bool CCurlFileEngine::Open(const CURL& url)
   // ★ vfs.stream.fast: Stat HEAD follows 302→CDN, gets size + m_effectiveUrl.
   // Worker then uses m_effectiveUrl (CDN) directly for GET with range.
   Stat(url, nullptr);
-  CLog::Log(LOGDEBUG,"{}::Open - {} size={} cdn={}", LOG_TAG, url.GetRedacted(), m_totalSize,
+  CLog::Log(LOGDEBUG,"{}#{}::Open - {} size={} cdn={}", LOG_TAG, m_id, url.GetRedacted(), m_totalSize,
             !m_effectiveUrl.empty() ? m_effectiveUrl : "(none)");
   return true;
 }
@@ -510,10 +511,9 @@ void CCurlFileEngine::Close() {
 void CCurlFileEngine::LogStats(const char* reason)
 {
   CLog::Log(LOGDEBUG,
-            "{}::{} - {} detail: reads={} reqBytes={} lruHits={} misses={} stores={} workerStarts={} workerResets={} rangeRequests={}",
-            LOG_TAG, __FUNCTION__, reason, m_readRequests.load(), m_requestedBytes.load(),
-            m_lruHits.load(), m_lruMisses.load(), m_lruStores.load(), m_workerStarts.load(),
-            m_workerResets.load(), m_downloadRangeRequests.load());
+            "{}#{}::{} - {} detail: reads={} reqBytes={} workerStarts={} workerResets={}",
+            LOG_TAG, m_id, __FUNCTION__, reason, m_readRequests.load(), m_requestedBytes.load(),
+            m_workerStarts.load(), m_workerResets.load());
 }
 
 void CCurlFileEngine::ResetForReuse() { m_logicalPos = 0; m_abortTransfer = false; m_triggerReset = false; m_hasError = false; m_cdnFallbackCount = 0; }
@@ -587,34 +587,14 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
   // ================================================================
   // Range mode (vfs.stream.fast pattern)
   // ================================================================
-  const size_t lruBlockSize = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_curlFileLRUCacheBlockSize;
+  const size_t lruBlockSize = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_blurayIsoCacheBlockSize;
   int64_t blk = m_logicalPos / (int64_t)lruBlockSize;
 
-  // --- Step 1: LRU cache hit ---
-  if (auto c=CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,blk)){
-    ++m_lruHits;
-    int64_t bs=blk*(int64_t)lruBlockSize;
-    size_t off=(size_t)(m_logicalPos-bs),cs=std::min(size,c->size()-off);
-    if (m_totalSize>0)cs=std::min(cs,(size_t)(m_totalSize-m_logicalPos));
-    if (cs>0){memcpy(out,c->data()+off,cs);m_logicalPos+=(int64_t)cs;return cs;}
-  }
-  else
-    ++m_lruMisses;
+  // Block caching lives above this engine (CBlurayIsoSession owns the store);
+  // this engine only streams a linear ring buffer from the CDN. Everything the
+  // reader needs that is not in the ring is a transport seek (teleport below).
 
-  // --- Step 2: Small file (<blockSize) download entirely ---
-  // One-shot per Read: after this Put() the next Read will hit Step 1 and
-  // return before reaching here, so no m_isFirstRead guard is needed.
-  if (m_totalSize>0 && m_totalSize<=(int64_t)lruBlockSize) {
-    CURL_HANDLE* c=PoolGet(); if(c){
-      std::vector<uint8_t> d((size_t)m_totalSize);
-      if(DownloadRange(c,0,m_totalSize,d)){PoolReturn(c);CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,0,d.data(),d.size());++m_lruStores;
-        size_t off=(size_t)m_logicalPos,cs=std::min(size,d.size()-off);
-        if(cs>0){memcpy(out,d.data()+off,cs);m_logicalPos+=(int64_t)cs;return cs;}}
-      PoolReturn(c);
-    }
-  }
-
-  // --- Step 3: Lazy worker start ---
+  // --- Lazy worker start ---
   if (!m_workerThread.joinable()){
     ++m_workerStarts;
     int64_t ap=(m_logicalPos/(int64_t)lruBlockSize)*(int64_t)lruBlockSize,sv=m_logicalPos;
@@ -632,15 +612,6 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
   if (m_totalSize>0) block_end = std::min(block_end, m_totalSize);
 
   while (m_running) {
-    // Re-check LRU: another reader may have filled it while the worker was running.
-    if (auto c=CCurlFileLRUCache::Instance().Get(m_fileUrl,m_modTime,blk)){
-      ++m_lruHits;
-      int64_t bs=blk*(int64_t)lruBlockSize;
-      size_t off=(size_t)(m_logicalPos-bs),cs=std::min((size_t)size,c->size()-off);
-      if(m_totalSize>0)cs=std::min(cs,(size_t)(m_totalSize-m_logicalPos));
-      if(cs>0){memcpy(out,c->data()+off,cs);m_logicalPos+=(int64_t)cs;return cs;}
-    }
-
     std::unique_lock<std::mutex> lk(m_rbMutex);
     int64_t dp = m_downloadPos.load();
     int64_t buf_start = dp - (int64_t)m_rbAvailable;
@@ -676,10 +647,6 @@ ssize_t CCurlFileEngine::Read(void* buffer, size_t size)
       }
 
       lk.unlock();
-
-      // Write block to LRU
-      CCurlFileLRUCache::Instance().Put(m_fileUrl,m_modTime,blk,block_data.data(),bsize);
-      ++m_lruStores;
 
       // Copy requested data from block
       size_t off=(size_t)(m_logicalPos-block_start);
@@ -758,8 +725,8 @@ void CCurlFileEngine::StartWorker() {
   if (m_workerThread.joinable() || m_running) return;
   if (m_ringBuffer.empty()) {
     m_ringBuffer.resize(m_ringBufferSize);
-    CLog::Log(LOGDEBUG, "{}::StartWorker - ring buffer allocated {}MB",
-              LOG_TAG, m_ringBuffer.size() >> 20);
+    CLog::Log(LOGDEBUG, "{}#{}::StartWorker - ring buffer allocated {}MB",
+              LOG_TAG, m_id, m_ringBuffer.size() >> 20);
   }
   m_running        = true;
   m_eof            = false;
@@ -825,7 +792,7 @@ void CCurlFileEngine::WorkerLoop()
 {
   CURL_HANDLE* curl = PoolGet();
   if (!curl) { CLog::Log(LOGERROR, "{}::Worker - PoolGet FAILED", LOG_TAG); m_hasError = true; m_running = false; return; }
-  CLog::Log(LOGDEBUG, "{}::Worker - thread starting pos={} url={}", LOG_TAG, m_logicalPos, m_fileUrl);
+  CLog::Log(LOGDEBUG, "{}#{}::Worker - thread starting pos={} url={}", LOG_TAG, m_id, m_logicalPos, m_fileUrl);
 
   int retries = 0;
   char errbuf[CURL_ERROR_SIZE];

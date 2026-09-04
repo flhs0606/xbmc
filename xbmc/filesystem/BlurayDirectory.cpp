@@ -12,7 +12,7 @@
 #include "LangInfo.h"
 #include "ServiceBroker.h"
 #include "URL.h"
-#include "cores/VideoPlayer/DVDInputStreams/BlurayIsoCache.h"
+#include "BlurayIsoSession.h"
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/Directory.h"
 #include "filesystem/DirectoryFactory.h"
@@ -53,7 +53,7 @@ void CBlurayDirectory::Dispose()
   m_disposing.store(true, std::memory_order_release);
 
   {
-    std::shared_ptr<CBlurayIsoCache> cache;
+    std::shared_ptr<CBlurayIsoSession> cache;
     {
       std::lock_guard<std::mutex> lock(m_isoCacheMutex);
       cache = std::move(m_isoCache);
@@ -319,16 +319,16 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
     }
 
     const int64_t sourceLength = m_isoFile->GetLength();
-    const bool disableIsoCache = URIUtils::IsHTTP(isoPath, true);
-    if (sourceLength > 0 && !disableIsoCache)
+    if (sourceLength > 0)
     {
       const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-      CBlurayIsoCache::Config cacheConfig{};
+      CBlurayIsoSession::Config cacheConfig{};
       cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
       cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
-      cacheConfig.prefetch = adv->m_blurayIsoCachePrefetch;
-      auto cache = std::make_shared<CBlurayIsoCache>(
-          sourceLength,
+      // isoPath is the udf host == the image URL the picker derived from the
+      // item dynpath, so the player session on the same image shares blocks.
+      auto cache = std::make_shared<CBlurayIsoSession>(
+          isoPath, sourceLength, sourceLength,
           [this](int64_t offset, uint8_t* buffer, size_t size) {
             return ReadRaw(offset, buffer, size);
           },
@@ -342,8 +342,8 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
     else
     {
       CLog::Log(LOGDEBUG,
-                "CBlurayDirectory::InitializeBluray - skip ISO cache for {} (source length {}, http iso {})",
-                CURL::GetRedacted(isoPath), sourceLength, disableIsoCache ? "true" : "false");
+                "CBlurayDirectory::InitializeBluray - skip ISO cache for {} (source length {})",
+                CURL::GetRedacted(isoPath), sourceLength);
     }
 
     if (!bd_open_stream(m_bd, this, ReadBlockCallback))
@@ -442,7 +442,7 @@ int CBlurayDirectory::ReadBlockCallback(void* handle, void* buf, int lba, int nu
   if (!self || !buf || self->m_disposing.load(std::memory_order_acquire))
     return -1;
 
-  std::shared_ptr<CBlurayIsoCache> cache;
+  std::shared_ptr<CBlurayIsoSession> cache;
   {
     std::lock_guard<std::mutex> lock(self->m_isoCacheMutex);
     cache = self->m_isoCache;

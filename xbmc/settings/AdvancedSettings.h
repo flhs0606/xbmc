@@ -446,14 +446,9 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int GetForceCSPrevVal() const;
     int m_forceCSPrevVal;
 
-    // Bluray ISO cache settings
+    // Bluray ISO cache settings (shared by HTTP ISO and SMB/NFS readers)
     unsigned int m_blurayIsoCacheBlockSize;
     unsigned int m_blurayIsoCacheMaxBytes;
-    bool m_blurayIsoCachePrefetch;
-
-    // CurlFile LRU cache settings (HTTP ISO streaming)
-    unsigned int m_curlFileLRUCacheBlockSize;
-    unsigned int m_curlFileLRUCacheMaxBytes;
 
   private:
     void Initialize();

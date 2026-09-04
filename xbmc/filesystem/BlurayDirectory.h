@@ -15,7 +15,7 @@
 #include <memory>
 #include <mutex>
 
-class CBlurayIsoCache;
+class CBlurayIsoSession;
 class CFileItem;
 class CFileItemList;
 
@@ -64,7 +64,7 @@ private:
   std::string m_realPath;
   std::atomic<bool> m_disposing{false};
   std::mutex m_isoCacheMutex;
-  std::shared_ptr<CBlurayIsoCache> m_isoCache;
+  std::shared_ptr<CBlurayIsoSession> m_isoCache;
   std::shared_ptr<XFILE::CFile> m_isoFile;
   std::mutex m_isoReadLock;
 };
