@@ -25016,8 +25016,18 @@ msgctxt "#60094"
 msgid "HDR InfoFrame Payload. A 48 character basic hex string to specify colour primaries, white point, luminance and content light level. Leave blank to align values with the DV VSVDB."
 msgstr ""
 
-#. "Dolby Vision HDR10+"
+#. "Dolby Vision HDR Vivid"
 #: system/settings/settings.xml
+msgctxt "#60140"
+msgid "Convert HDR Vivid video to DV profile 8.1 during playback"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60141"
+msgid "Set to On to dynamically convert HDR Vivid video to DV profile 8.1 video during playback."
+msgstr ""
+
 msgctxt "#60101"
 msgid "Convert HDR10+ video to DV profile 8.1 during playback"
 msgstr ""
@@ -25115,13 +25125,13 @@ msgstr ""
 #. "Dolby Vision HDR10+"
 #: system/settings/settings.xml
 msgctxt "#60131"
-msgid "Choose DV or HDR10+ video stream to output when both are present"
+msgid "Choose DV, HDR10+ or HDR Vivid video stream to output when multiple are present"
 msgstr ""
 
 #. "Dolby Vision HDR10+"
 #: system/settings/settings.xml
 msgctxt "#60132"
-msgid "When both DV and HDR10+ video streams are present, choose which video stream to output."
+msgid "When multiple dynamic HDR (DV, HDR10+, HDR Vivid) video streams or metadata are present, choose which one to prioritize."
 msgstr ""
 
 #. "Dolby Vision HDR10+"
@@ -25134,6 +25144,24 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#60134"
 msgid "HDR10+"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60135"
+msgid "HDR Vivid"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60136"
+msgid "Choose HDR Vivid conversion to DV instead of original DV video stream when both are present"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60137"
+msgid "When both DV and HDR Vivid video streams are present, choose conversion from HDR Vivid video to DV over using the original DV video, note any FEL will be discarded in this case."
 msgstr ""
 
 #. "Dolby Vision Display Led Source Levels Metadata"

@@ -233,6 +233,11 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
   if (pItem->m_bIsShareOrDrive || pItem->IsParentFolder() || pItem->GetPath() == "add")
     return false;
 
+  // Never attempt filesystem/embedded art lookup into disc images or bluray paths
+  if (pItem->IsDiscImage() || URIUtils::IsDiscImage(pItem->GetDynPath()) ||
+      URIUtils::IsBluray(pItem->GetDynPath()) || URIUtils::IsBluray(pItem->GetPath()))
+    return false;
+
   if (pItem->HasVideoInfoTag() && !pItem->GetVideoInfoTag()->m_type.empty() &&
       pItem->GetVideoInfoTag()->m_type != MediaTypeMovie &&
       pItem->GetVideoInfoTag()->m_type != MediaTypeTvShow &&

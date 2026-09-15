@@ -36,6 +36,7 @@
 #include "utils/CharsetConverter.h"
 #include "utils/log.h"
 #include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 
 using namespace XFILE;
 using namespace XCURL;
@@ -1146,6 +1147,15 @@ bool CCurlFile::Open(const CURL& url)
                 __FUNCTION__, redactPath);
       m_multisession = false;
     }
+    // Discard multisession for disc image HTTP(S) sources accessed via CDN.
+    // Legacy CReadState multisession creates concurrent Range connections
+    // that exhaust limited-use CDN tokens (e.g. c=2 per URL), triggering 403.
+    if (m_multisession && URIUtils::IsDiscImage(url2.GetFileName()))
+    {
+      CLog::Log(LOGDEBUG, "CCurlFile::{} - <{}> Disabling multi session for disc image source",
+                __FUNCTION__, redactPath);
+      m_multisession = false;
+    }
   }
 
   if(StringUtils::EqualsNoCase(m_state->m_httpheader.GetValue("Transfer-Encoding"), "chunked"))
@@ -1503,6 +1513,15 @@ int64_t CCurlFile::GetPosition()
 
 int CCurlFile::Stat(const CURL& url, struct __stat64* buffer)
 {
+  // ISO files: return unknown size. The download layer discovers the size from the
+  // response; probing here would cost an extra request and, on some CDNs, burn a
+  // single-use redirect token.
+  if (IsIsoUrl(url))
+  {
+    if (buffer) { *buffer = {}; buffer->st_size = -1; buffer->st_mode = _S_IFREG; }
+    return 0;
+  }
+
   // if file is already running, get info from it
   if( m_opened )
   {
@@ -2166,4 +2185,42 @@ void CCurlFile::PreloadCaCertsBlob()
   {
     CLog::LogF(LOGERROR, "failed to load 'system/certs/cacert.pem'");
   }
+}
+
+ssize_t CCurlFile::Read(void* lpBuf, size_t uiBufSize)
+{
+  return m_state->Read(lpBuf, uiBufSize);
+}
+
+bool CCurlFile::IsIsoUrl(const CURL& url)
+{
+  // Only activate engine for HTTP/HTTPS/DAV .iso files
+  if (!url.IsProtocol("http") && !url.IsProtocol("https") &&
+      !url.IsProtocol("dav") && !url.IsProtocol("davs"))
+    return false;
+
+  // Use CURLU to properly extract path component (strips ?query and #fragment)
+  CURLU* h = curl_url();
+  if (!h)
+    return false;
+
+  bool isIso = false;
+  char* path = nullptr;
+  if (curl_url_set(h, CURLUPART_URL, url.Get().c_str(), CURLU_NON_SUPPORT_SCHEME) == CURLUE_OK &&
+      curl_url_get(h, CURLUPART_PATH, &path, 0) == CURLUE_OK && path)
+  {
+    std::string p(path);
+    size_t lastSlash = p.rfind('/');
+    std::string filename = (lastSlash == std::string::npos) ? p : p.substr(lastSlash + 1);
+    size_t dotPos = filename.rfind('.');
+    if (dotPos != std::string::npos)
+    {
+      std::string ext = filename.substr(dotPos + 1);
+      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+      isIso = (ext == "iso");
+    }
+    curl_free(path);
+  }
+  curl_url_cleanup(h);
+  return isIso;
 }

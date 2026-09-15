@@ -9,6 +9,9 @@
 #pragma once
 
 #include "BlurayStateSerializer.h"
+#if defined(HAS_UDFREAD)
+#include "filesystem/UDFContext.h"
+#endif
 #include "DVDInputStream.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 
@@ -17,6 +20,7 @@
 #include <chrono>
 #include <list>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -52,7 +56,6 @@ extern "C"
 #define HDMV_PID_IG_FIRST         0x1400
 #define HDMV_PID_IG_LAST          0x141f
 
-class CBlurayIsoCache;
 class CDVDOverlayImage;
 class IVideoPlayer;
 class CDVDDemux;
@@ -113,6 +116,12 @@ public:
    * \return The supported menu type
   */
   MenuType GetSupportedMenuType() override;
+
+  /*!
+   \brief Tell the image's cache how fast its content is being consumed.
+   The disc is read through the UDF layer, so the cache that wants this is the one beneath it.
+   */
+  void SetReadRate(uint32_t rate) override;
 
   bool IsInMenu() override;
   bool IsMenuDomainSegment() const;
@@ -351,7 +360,6 @@ protected:
   private:
     bool OpenStream(CFileItem &item);
     int ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks);
-    int64_t ReadRaw(int64_t offset, uint8_t* buffer, size_t size);
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;
     void ApplyAudioCapability() const;
@@ -365,7 +373,9 @@ protected:
 
     /* used during bd_open_stream read block*/
     CCriticalSection m_readBlocksLock;
-    std::atomic<unsigned int> m_isoCacheFallbacks{0};
-    std::mutex m_isoCacheMutex;
-    std::shared_ptr<CBlurayIsoCache> m_isoCache;
+
+#if defined(HAS_UDFREAD)
+    //! Keeps a disc image's UDF volume mounted for as long as the disc is open
+    std::optional<XFILE::CUDFMount> m_udfMount;
+#endif
 };

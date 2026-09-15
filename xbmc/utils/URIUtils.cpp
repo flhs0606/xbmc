@@ -1216,6 +1216,149 @@ bool URIUtils::IsDVDFile(const std::string& file)
           StringUtils::EndsWithNoCase(fileName, "_0.ifo") && fileName.length() == 12);
 }
 
+bool URIUtils::IsContainerPath(const std::string& strFile)
+{
+  return IsStack(strFile) || IsMultiPath(strFile);
+}
+
+bool URIUtils::IsDiscPath(const std::string& path)
+{
+  std::string folder{path};
+  RemoveSlashAtEnd(folder);
+  folder = GetFileName(folder);
+  return StringUtils::EqualsNoCase(folder, "VIDEO_TS") || StringUtils::EqualsNoCase(folder, "BDMV");
+}
+
+std::string URIUtils::GetDiscBase(const std::string& file)
+{
+  std::string discFile{IsBlurayPath(file) ? GetDiscFile(file) : file};
+  if (IsDiscImage(discFile))
+    return discFile; // return .ISO
+
+  return GetParentPath(discFile);
+}
+
+std::string URIUtils::GetDiscBasePath(const std::string& file)
+{
+  std::string base{GetDiscBase(file)};
+  if (IsDiscImage(base))
+    return GetDirectory(base);
+  return base;
+}
+
+std::string URIUtils::RemoveDiscPath(const std::string& path)
+{
+  std::string base{};
+  if (IsBDFile(path) || IsDVDFile(path))
+  {
+    std::string folder{GetDirectory(path)};
+    RemoveSlashAtEnd(folder);
+    const std::string lastFolder{GetFileName(folder)};
+    if (StringUtils::EqualsNoCase(lastFolder, "VIDEO_TS") ||
+        StringUtils::EqualsNoCase(lastFolder, "BDMV"))
+      base = GetDirectory(folder); // go back up another one
+    else
+      base = folder;
+  }
+  return base;
+}
+
+std::string URIUtils::GetDiscUnderlyingFile(const CURL& url)
+{
+  if (!url.IsProtocol("bluray"))
+    return {};
+
+  const std::string& host = url.GetHostName();
+  const std::string& filename = url.GetFileName();
+  if (host.empty() || filename.empty())
+    return {};
+  return AddFileToFolder(host, filename);
+}
+
+std::string URIUtils::GetBlurayPath(const std::string& path)
+{
+  if (IsContainerPath(path))
+    return {};
+
+  if (IsBlurayPath(path))
+  {
+    // Already bluray:// path
+    CURL url(path);
+    url.SetFileName("");
+    return url.Get();
+  }
+
+  std::string newPath{};
+  if (IsDiscImage(path))
+  {
+    CURL url("udf://");
+    url.SetHostName(path);
+    newPath = url.Get();
+  }
+  else if (IsBDFile(path))
+    newPath = GetDiscBasePath(path);
+
+  if (!newPath.empty())
+  {
+    CURL url("bluray://");
+    url.SetHostName(newPath);
+    newPath = url.Get();
+  }
+
+  return newPath;
+}
+
+std::string URIUtils::GetBlurayTitlesPath(const std::string& path,
+                                          GetAllTitles getAllTitles,
+                                          AllTitlesOptions options)
+{
+  if (IsContainerPath(path))
+    return {};
+
+  std::string newPath{AddFileToFolder(GetBlurayPath(path), "root", "titles")};
+  if (options == AllTitlesOptions::EPISODES)
+    newPath = AddFileToFolder(newPath, "episodes");
+  if (getAllTitles == GetAllTitles::ALL)
+    newPath = AddFileToFolder(newPath, "all");
+  return newPath;
+}
+
+std::string URIUtils::GetBlurayMainTitlePath(const std::string& path, GetAllTitles getAllTitles)
+{
+  if (IsContainerPath(path))
+    return {};
+
+  std::string newPath{AddFileToFolder(GetBlurayPath(path), "root", "main")};
+  if (getAllTitles == GetAllTitles::ALL)
+    newPath = AddFileToFolder(newPath, "all");
+  return newPath;
+}
+
+std::string URIUtils::GetBlurayPlaylistPath(const std::string& path, int playlist /* = -1 */)
+{
+  if (IsContainerPath(path))
+    return {};
+
+  return AddFileToFolder(GetBlurayPath(path), "BDMV", "PLAYLIST",
+                         playlist != -1 ? StringUtils::Format("{:05}.mpls", playlist) : "");
+}
+
+int URIUtils::GetBlurayPlaylistFromPath(const std::string& path)
+{
+  int playlist{-1};
+  if (IsBlurayPath(path))
+  {
+    const std::string filename = GetFileName(path);
+    if (filename.length() == 10 && StringUtils::EndsWithNoCase(filename, ".mpls"))
+    {
+      const std::string numStr = filename.substr(0, 5);
+      if (StringUtils::IsNaturalNumber(numStr))
+        playlist = std::stoi(numStr);
+    }
+  }
+  return playlist;
+}
+
 bool URIUtils::IsAndroidApp(const std::string &path)
 {
   return IsProtocol(path, "androidapp");

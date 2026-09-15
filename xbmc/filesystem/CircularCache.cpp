@@ -8,6 +8,8 @@
 
 #include "CircularCache.h"
 
+#include <new>
+
 #include "threads/SystemClock.h"
 #include "utils/log.h"
 
@@ -43,7 +45,10 @@ int CCircularCache::Open()
     return CACHE_RC_ERROR;
   m_buf = (uint8_t*)MapViewOfFile(m_handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 #else
-  m_buf = new uint8_t[m_size];
+  // nothrow: a cache this large (filecache.memorysize) can fail to allocate on a device with
+  // little free memory, and the null check below is dead code if new throws instead - the
+  // exception would unwind out of CFile::Open, which does not catch it, and end the process.
+  m_buf = new (std::nothrow) uint8_t[m_size];
 #endif
   if (m_buf == nullptr)
     return CACHE_RC_ERROR;

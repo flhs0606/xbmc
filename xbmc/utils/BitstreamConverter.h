@@ -24,6 +24,8 @@
 #include "HevcSei.h"
 #include "HDR10Plus.h"
 #include "HDR10PlusConvert.h"
+#include "HDRVivid.h"
+#include "HDRVividConvert.h"
 
 extern "C" {
 #include <libavutil/avutil.h>
@@ -191,6 +193,8 @@ public:
 
   bool Open(bool to_annexb);
   void Close();
+  bool IsNativeDv() const { return m_initial_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION || m_hasNativeDoviRpu; }
+  bool ShouldDropNativeDovi() const;
   bool NeedConvert() const { return m_convert_bitstream; }
   bool Convert(uint8_t* pData, int iSize, double pts);
   bool Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pData_el, int iSize_el, double pts);
@@ -229,9 +233,11 @@ public:
     UpdateCMv40Auto2ThresholdPq();
   }
   void SetConvertHdr10Plus(bool value) { m_convert_Hdr10Plus = value; }
+  void SetConvertHdrVivid(bool value) { m_convert_HdrVivid = value; }
   void SetPreferCovertHdr10Plus(bool value) { m_prefer_Hdr10Plus_conversion = value; }
+  void SetPreferConvertHdrVivid(bool value) { m_prefer_HdrVivid_conversion = value; }
   void SetConvertHdr10PlusPeakBrightnessSource(enum PeakBrightnessSource value) { m_convert_Hdr10Plus_peak_brightness_source = value; };
-  void SetDualPriorityHdr10Plus(bool value) { m_dual_priority_Hdr10Plus = value; }
+  void SetDualPriority(int priority) { m_dual_priority = priority; }
   void SetRemoveDovi(bool value) { m_removeDovi = value; }
   void SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
 
@@ -284,6 +290,8 @@ protected:
 
   void AddDoViRpuNaluWrap(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts);
   void AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts);
+  void AddDoViRpuNaluFromVividWrap(const HdrVividMetadata& meta, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts);
+  void AddDoViRpuNaluFromVivid(const HdrVividMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts);
 
   void ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, uint32_t& poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
   void ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
@@ -340,10 +348,19 @@ protected:
   bool m_removeDovi;
   bool m_removeHdr10Plus;
   bool m_convert_Hdr10Plus;
+  bool m_convert_HdrVivid{false};
+  bool m_hasNativeDoviRpu{false};
+  bool m_convert_hdrvivid_meta{false};
+  bool m_hasHdr10Plus{false};
+  bool m_hasHdrVivid{false};
+  std::optional<HdrVividMetadata> m_pendingVividMeta;
   bool m_prefer_Hdr10Plus_conversion;
-  bool m_dual_priority_Hdr10Plus;
+  bool m_prefer_HdrVivid_conversion{false};
+  int m_dual_priority{0};
   Hdr10PlusMetadata m_lastHdr10PlusMeta{};
   bool m_lastHdr10PlusMetaValid{false};
+  HdrVividMetadata m_lastVividMeta{};
+  bool m_lastVividMetaValid{false};
   enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source;
   bool m_first_frame;
   std::chrono::steady_clock::time_point m_gateFirstReject{};

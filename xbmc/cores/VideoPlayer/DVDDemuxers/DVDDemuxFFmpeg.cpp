@@ -1736,17 +1736,23 @@ void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
     return;
 
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const bool hdr10PlusPrio =
-      settings && settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1;
-  const bool convertEnabled =
+  const int dualPriority =
+      settings ? settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) : 0;
+  const bool hdr10PlusPrio = (dualPriority == 1);
+  const bool hdrVividPrio = (dualPriority == 2);
+  const bool convertHdr10PlusEnabled =
       settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
-  const bool preferConvert = convertEnabled && settings &&
+  const bool preferHdr10PlusConvert = convertHdr10PlusEnabled && settings &&
       settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
-  const bool preferHdr10Plus = hdr10PlusPrio || preferConvert;
+  const bool convertVividEnabled =
+      settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT);
+  const bool preferVividConvert = convertVividEnabled && settings &&
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT);
+  const bool preferNonDv = hdr10PlusPrio || hdrVividPrio || preferHdr10PlusConvert || preferVividConvert;
 
   auto matchesPreferred = [&](AVStream* st) -> bool {
     const bool isDovi = DetermineHdrType(st) == StreamHdrType::HDR_TYPE_DOLBYVISION;
-    if (!preferHdr10Plus)
+    if (!preferNonDv)
       return isDovi;
     if (!isDovi)
       return true;

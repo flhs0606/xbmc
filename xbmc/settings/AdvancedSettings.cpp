@@ -206,10 +206,6 @@ void CAdvancedSettings::Initialize()
   m_vc1DropFrame = true;
   m_vc1RepairTimestamps = true;
 
-  m_blurayIsoCachePageSize = 256 * 1024;
-  m_blurayIsoCacheMaxBytes = 64 * 1024 * 1024;
-  m_blurayIsoCacheForwardPrefetchPages = 1;
-
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
   m_musicTimeSeekBackward = -10;
@@ -942,14 +938,6 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetBoolean(pElement, "vc1forceframeint", m_vc1ForceFrameInt);
     XMLUtils::GetBoolean(pElement, "vc1dropframe", m_vc1DropFrame);
     XMLUtils::GetBoolean(pElement, "vc1repairtimestamps", m_vc1RepairTimestamps);
-  }
-
-  pElement = pRootElement->FirstChildElement("blurayisocache");
-  if (pElement)
-  {
-    XMLUtils::GetUInt(pElement, "pagesize", m_blurayIsoCachePageSize, 2048, 1024 * 1024);
-    XMLUtils::GetUInt(pElement, "maxbytes", m_blurayIsoCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
-    XMLUtils::GetUInt(pElement, "forwardprefetchpages", m_blurayIsoCacheForwardPrefetchPages, 0, 16);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");

@@ -439,10 +439,6 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_vc1DropFrame{true};
     bool m_vc1RepairTimestamps{true};
 
-    unsigned int m_blurayIsoCachePageSize;
-    unsigned int m_blurayIsoCacheMaxBytes;
-    unsigned int m_blurayIsoCacheForwardPrefetchPages;
-
   private:
     void Initialize();
     void Clear();

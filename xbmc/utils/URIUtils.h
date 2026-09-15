@@ -184,8 +184,76 @@ public:
   static bool IsBlurayPath(const std::string& strFile);
   static bool IsBlurayMenuPath(const std::string& file);
 
+  /*! \brief Whether the path is a bluray:// or dvd:// root folder (i.e. /VIDEO_TS or /BDMV)
+   *  of a disc image (eg .iso) or a disc folder.
+   */
+  static bool IsDiscPath(const std::string& path);
+
+  /*! \brief Given a bluray:// path or disc file path (index.bdmv/video_ts.ifo), return the base .ISO or folder
+   *  of the disc.
+   *  \param file source path.
+   *  \return the .ISO path or the disc folder.
+   */
+  static std::string GetDiscBase(const std::string& file);
+
+  /*! \brief Given a bluray:// path or disc file path (index.bdmv/video_ts.ifo), return the folder
+   *  containing the BDMV/VIDEO_TS of the disc.
+   *  \param file source path.
+   *  \return the folder containing BDMV/VIDEO_TS.
+   */
+  static std::string GetDiscBasePath(const std::string& file);
+
+  /*! \brief Given a path (index.bdmv/video_ts.ifo), return the base folder
+   *  containing the disc image (eg .iso) or disc folder.
+   *  \param path source path.
+   */
+  static std::string RemoveDiscPath(const std::string& path);
+
+  /*! \brief Given a bluray:// path, return the underlying file path (eg. smb://, udf:// etc..)
+   *  that points to the file itself.
+   *  \param path bluray:// path.
+   *  \return the underlying file path.
+   */
+  static std::string GetDiscUnderlyingFile(const CURL& url);
+
+  enum class GetAllTitles : bool
+  {
+    LONG,
+    ALL
+  };
+
+  enum class AllTitlesOptions : bool
+  {
+    MOVIES,
+    EPISODES
+  };
+
+  /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to select titles.
+   */
+  static std::string GetBlurayTitlesPath(const std::string& path,
+                                         GetAllTitles getAllTitles = GetAllTitles::LONG,
+                                         AllTitlesOptions options = AllTitlesOptions::MOVIES);
+
+  /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to main title.
+   */
+  static std::string GetBlurayMainTitlePath(const std::string& path,
+                                            GetAllTitles getAllTitles = GetAllTitles::LONG);
+
+  /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to default playlist path.
+   */
+  static std::string GetBlurayPlaylistPath(const std::string& path, int playlist = -1);
+
+  /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the playlist number.
+   */
+  static std::string GetBlurayPath(const std::string& path);
+
+  /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the playlist number.
+   */
+  static int GetBlurayPlaylistFromPath(const std::string& path);
+
   static bool IsBDFile(const std::string& file);
   static bool IsDVDFile(const std::string& file);
+  static bool IsContainerPath(const std::string& strFile);
   static bool IsAndroidApp(const std::string& strFile);
   static bool IsLibraryFolder(const std::string& strFile);
   static bool IsLibraryContent(const std::string& strFile);

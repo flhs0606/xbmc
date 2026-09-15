@@ -70,8 +70,14 @@ bool CVideoGUIInfo::InitCurrentItem(CFileItem *item)
 
     CLog::Log(LOGDEBUG, "CVideoGUIInfo::InitCurrentItem({})", CURL::GetRedacted(item->GetPath()));
 
+    // For disc images (ISO/IMG/UDF) and Blu-ray streams, skip thumb and streamdetails
+    // extraction on the GUI thread to avoid concurrent VFS opens against single-connection
+    // media sources (e.g. CDN-signed HTTP ISOs where concurrent Range workers trigger 403).
+    const bool isDisc = item->IsDiscImage() || URIUtils::IsDiscImage(item->GetDynPath()) ||
+                        URIUtils::IsBluray(item->GetDynPath()) || URIUtils::IsBluray(item->GetPath());
+
     // Find a thumb for this file.
-    if (!item->HasArt("thumb"))
+    if (!isDisc && !item->HasArt("thumb"))
     {
       CVideoThumbLoader loader;
       loader.LoadItem(item);

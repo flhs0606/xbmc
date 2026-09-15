@@ -25,6 +25,7 @@
 #include "ServiceBroker.h"
 #include "ServiceManager.h"
 #include "TextureCache.h"
+#include "filesystem/BlurayDiscCache.h"
 #include "URL.h"
 #include "Util.h"
 #include "addons/AddonManager.h"
@@ -792,6 +793,7 @@ bool CApplication::Initialize()
     }
 
     CServiceBroker::RegisterTextureCache(std::make_shared<CTextureCache>());
+    CServiceBroker::RegisterBlurayDiscCache(std::make_shared<XFILE::CBlurayDiscCache>());
 
     std::string skinId = settings->GetString(CSettings::SETTING_LOOKANDFEEL_SKIN);
     if (!skinHandling->LoadSkin(skinId))
@@ -2139,6 +2141,7 @@ bool CApplication::Cleanup()
     CLog::Log(LOGINFO, "unload skin");
     GetComponent<CApplicationSkinHandling>()->UnloadSkin();
 
+    CServiceBroker::UnregisterBlurayDiscCache();
     CServiceBroker::UnregisterTextureCache();
 
     // stop all remaining scripts; must be done after skin has been unloaded,
