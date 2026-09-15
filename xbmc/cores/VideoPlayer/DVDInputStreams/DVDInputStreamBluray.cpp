@@ -460,22 +460,19 @@ bool CDVDInputStreamBluray::Open()
     root = url.GetHostName();
     filename = URIUtils::GetFileName(url.GetFileName());
 
-    // Check whether disc is AACS protected
+    // Remove udf:// if present before probing disc properties
     CURL url2(root);
     CFileItem item(url2, false);
+    if (url2.IsProtocol("udf"))
+      item.SetPath(url2.GetHostName());
+
+    // Check whether disc is AACS protected (single probe on normalized path)
     openDisc = item.IsProtectedBlurayDisc();
 
     // check for a menu call for an image file
     if (StringUtils::EqualsNoCase(filename, "menu"))
     {
       resumable = false;
-
-      // Remove udf:// if present
-      if (url2.IsProtocol("udf"))
-      {
-        item.SetPath(url2.GetHostName());
-        openDisc = item.IsProtectedBlurayDisc();
-      }
 
       // A menu on a disc image is opened below in files mode like any other disc: root already
       // names the image, and a menu on a BDMV folder has always been read that way.
