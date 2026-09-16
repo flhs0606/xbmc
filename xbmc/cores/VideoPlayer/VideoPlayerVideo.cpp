@@ -737,8 +737,11 @@ void CVideoPlayerVideo::Process()
 
       bRequestDrop = false;
       iDropDirective = CalcDropRequirement(pts);
-      if ((iDropDirective & DROP_VERYLATE) &&
-           m_bAllowDrop &&
+
+      // Framerate calibration exists to avoid dropping frames during normal playback before we're
+      // confident what the real framerate is. That doesn't apply during trick-play and
+      // DROP_VERYLATE must not be silently disabled.
+      if ((iDropDirective & DROP_VERYLATE) && (m_bAllowDrop || m_speed > DVD_PLAYSPEED_NORMAL) &&
           !bPacketDrop)
       {
         bRequestDrop = true;
@@ -1298,6 +1301,16 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
 
   if (buffer < 0)
   {
+    // The render buffer pool can fill up in trick-play FF, with more new pictures decoded than
+    // are taken out at the display rate.
+    // Drop the picture to let the renderer naturally drain the pool and make room for next iteration.
+    // It will receive the most current new picture instead of whatever was decoded first (likely stale)
+    if (m_speed > DVD_PLAYSPEED_NORMAL)
+    {
+      m_droppingStats.AddOutputDropGain(picture.pts, 1);
+      return OUTPUT_DROPPED;
+    }
+
     m_playbackStalled = true;
 
     if (m_speed != DVD_PLAYSPEED_PAUSE)

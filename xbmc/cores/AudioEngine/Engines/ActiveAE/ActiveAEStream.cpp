@@ -817,3 +817,8 @@ bool CActiveAEStreamBuffers::HasWork() const {
 
   return false;
 }
+
+bool CActiveAEStreamBuffers::IsAtempoActive() const
+{
+  return m_atempoBuffers && m_atempoBuffers->GetTempo() != 1.0f;
+}

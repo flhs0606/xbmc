@@ -206,6 +206,7 @@ public:
   int GetPgsVerticalMode() const;
   void SetPgsVerticalMode(int mode) const;
   int GetPgsVerticalOffsetSteps() const;
+  void SetPgsVerticalOffsetSteps(int steps) const;
   int GetPgsBitmapZoom() const;
   std::string GetPgsManualActiveAspect() const;
   bool GetRestrictToActiveArea() const;

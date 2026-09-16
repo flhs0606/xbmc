@@ -7745,7 +7745,33 @@ msgctxt "#13557"
 msgid "Skip delay"
 msgstr ""
 
-#empty strings from id 13558 to 13599
+#. Name of a setting to configure the maximum fast-forward speed with smooth/continuous playback
+#: system/settings/settings.xml
+msgctxt "#13558"
+msgid "Maximum smooth fast-forward speed"
+msgstr ""
+
+msgctxt "#13559"
+msgid "2x"
+msgstr ""
+
+msgctxt "#13560"
+msgid "4x"
+msgstr ""
+
+msgctxt "#13561"
+msgid "8x"
+msgstr ""
+
+msgctxt "#13562"
+msgid "16x"
+msgstr ""
+
+msgctxt "#13563"
+msgid "32x"
+msgstr ""
+
+#empty strings from id 13564 to 13599
 
 #: system/settings/darwin.xml
 msgctxt "#13600"
@@ -22647,7 +22673,13 @@ msgctxt "#37116"
 msgid "Adaptive"
 msgstr ""
 
-#empty strings from id 37117 to 37119
+#. Description of setting #13558 Maximum smooth fast-forward speed
+#: system/settings/settings.xml
+msgctxt "#37117"
+msgid "Cutoff of the analog fast-forward mode that shows every picture. Some hardware may not be able to keep up with the higher demand of the higher speeds."
+msgstr ""
+
+#empty strings from id 37118 to 37119
 
 #. Value of setting - Byte
 #: xbmc/settings/SevicesSettings.cpp

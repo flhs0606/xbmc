@@ -4414,6 +4414,7 @@ void CVideoPlayer::SetPlaySpeed(int speed)
 {
   if (IsPlaying())
   {
+    UpdateAudioPassthroughForSpeed(static_cast<double>(speed) / DVD_PLAYSPEED_NORMAL);
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, false };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
   }
@@ -4826,6 +4827,7 @@ void CVideoPlayer::SetTempo(float tempo)
   tempo = floor(tempo * 100.0f + 0.5f) / 100.0f;
   if (m_processInfo->IsTempoAllowed(tempo))
   {
+    UpdateAudioPassthroughForSpeed(tempo);
     int speed = tempo * DVD_PLAYSPEED_NORMAL;
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, true };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
@@ -4858,6 +4860,41 @@ bool CVideoPlayer::SupportsTempo() const
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   return m_State.cantempo;
 }
+
+bool CVideoPlayer::CanTempo()
+{
+  auto comp = CServiceBroker::GetSettingsComponent();
+  if (!comp)
+    return false;
+  auto settings = comp->GetSettings();
+  if (!settings)
+    return false;
+
+  return settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK) ||
+         settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK);
+}
+
+void CVideoPlayer::UpdateAudioPassthroughForSpeed(double speed)
+{
+  if (!m_VideoPlayerAudio)
+    return;
+
+  const bool isNonNormalSpeed = (speed != 1.0 && speed != 0.0);
+
+  if (isNonNormalSpeed && m_VideoPlayerAudio->IsPassthrough() && !m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: non-normal speed ({:.2f}x), temporarily disabling passthrough for audio tempo", speed);
+    m_bPassthroughTempFallback = true;
+    m_VideoPlayerAudio->SetAllowPassthrough(false);
+  }
+  else if (!isNonNormalSpeed && m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: returning to normal speed, restoring passthrough");
+    m_bPassthroughTempFallback = false;
+    m_VideoPlayerAudio->SetAllowPassthrough(true);
+  }
+}
+
 
 bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iStream, int source, bool reset /*= true*/)
 {
@@ -6717,7 +6754,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     bool realtime = m_pInputStream->IsRealtime();
 
-    state.cantempo = false;
+    state.cantempo = CanTempo() && !realtime;
 
     m_processInfo->SetStateRealtime(realtime);
   }

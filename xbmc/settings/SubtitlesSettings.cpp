@@ -188,6 +188,11 @@ int CSubtitlesSettings::GetPgsVerticalOffsetSteps() const
   return m_settings->GetInt(CSettings::SETTING_SUBTITLES_PGSVERTICALOFFSET);
 }
 
+void CSubtitlesSettings::SetPgsVerticalOffsetSteps(int steps) const
+{
+  m_settings->SetInt(CSettings::SETTING_SUBTITLES_PGSVERTICALOFFSET, steps);
+}
+
 int CSubtitlesSettings::GetPgsBitmapZoom() const
 {
   return m_settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPZOOM);

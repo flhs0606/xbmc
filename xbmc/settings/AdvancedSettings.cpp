@@ -179,7 +179,7 @@ void CAdvancedSettings::Initialize()
   m_DXVACheckCompatibility = false;
   m_DXVACheckCompatibilityPresent = false;
   m_videoFpsDetect = 2;
-  m_maxTempo = 1.55f;
+  m_maxTempo = 2.0f;
   m_videoPreferStereoStream = false;
   m_dvVsvdbV1Enabled = false;
 

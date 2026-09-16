@@ -75,6 +75,20 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
+        <setting id="videoplayer.maxsmoothff" type="integer" label="13558" help="37117">
+          <level>2</level>
+          <default>2</default>
+          <constraints>
+            <options>
+              <option label="13559">2</option>
+              <option label="13560">4</option>
+              <option label="13561">8</option>
+              <option label="13562">16</option>
+              <option label="13563">32</option>
+            </options>
+          </constraints>
+          <control type="list" format="string" />
+        </setting>
         <setting id="videoplayer.errorinaspect" type="integer" label="22021" help="36170">
           <level>2</level>
           <default>0</default>
