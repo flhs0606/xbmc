@@ -36,7 +36,6 @@ extern "C"
 #include <libbluray/keys.h>
 #include <libbluray/overlay.h>
 #include <libbluray/player_settings.h>
-#include "DVDInputStreamFile.h"
 }
 
 #define MAX_PLAYLIST_ID 99999
@@ -75,7 +74,6 @@ public:
   bool Open() override;
   void Close() override;
   int Read(uint8_t* buf, int buf_size) override;
-  int ReadBlocks(uint8_t* buf, int lba, int num_blocks);
   int64_t Seek(int64_t offset, int whence) override;
   void Abort() override;
   bool IsEOF() override;
@@ -117,11 +115,6 @@ public:
   */
   MenuType GetSupportedMenuType() override;
 
-  /*!
-   \brief Tell the image's cache how fast its content is being consumed.
-   The disc is read through the UDF layer, so the cache that wants this is the one beneath it.
-   */
-  void SetReadRate(uint32_t rate) override;
 
   bool IsInMenu() override;
   bool IsMenuDomainSegment() const;
@@ -358,21 +351,16 @@ protected:
 #endif
 
   private:
-    bool OpenStream(CFileItem &item);
-    int ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks);
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;
     void ApplyAudioCapability() const;
     void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
-    std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 
     /*! Bluray state serializer handler */
     CBlurayStateSerializer m_blurayStateSerializer;
 
-    /* used during bd_open_stream read block*/
-    CCriticalSection m_readBlocksLock;
 
 #if defined(HAS_UDFREAD)
     //! Keeps a disc image's UDF volume mounted for as long as the disc is open

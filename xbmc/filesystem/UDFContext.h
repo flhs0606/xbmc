@@ -54,8 +54,6 @@ public:
 
   udfread* GetHandle() const { return m_udf; }
 
-  /*! \brief Pass the rate the volume is being read at to the cache beneath it. */
-  void SetReadRate(uint32_t rate);
 
 private:
   CUDFContext() = default;
@@ -83,8 +81,6 @@ public:
   ~CUDFMount() = default;
   CUDFMount(const CUDFMount&) = delete;
 
-  /*! \brief Pass the rate the volume is being read at to the cache beneath it. */
-  void SetReadRate(uint32_t rate) const;
   CUDFMount& operator=(const CUDFMount&) = delete;
   CUDFMount(CUDFMount&&) noexcept = default;
   CUDFMount& operator=(CUDFMount&&) noexcept = default;

@@ -29,7 +29,7 @@ HdrVividMetadata hdr_vivid_sei_to_metadata(CBitstreamReader& br)
   // system_start_code: 8 bits (0x01~0x07 for CUVA 005.1)
   metadata.system_start_code = br.ReadBits(8);
 
-  // T/UWA 005.1-2022, table 11: system_start_code 0x01~0x07 → num_windows = 1
+  // T/UWA 005.1-2022, table 11: system_start_code 0x01~0x07 -> num_windows = 1
   if (metadata.system_start_code >= 0x01 && metadata.system_start_code <= 0x07)
   {
     metadata.num_windows = 1;
@@ -38,7 +38,7 @@ HdrVividMetadata hdr_vivid_sei_to_metadata(CBitstreamReader& br)
     {
       HdrVividWindowParams& params = metadata.params[w];
 
-      // 4 × 12-bit maxrgb values
+      // 4 x 12-bit maxrgb values
       params.minimum_maxrgb  = br.ReadBits(12);
       params.average_maxrgb  = br.ReadBits(12);
       params.variance_maxrgb = br.ReadBits(12);
@@ -54,7 +54,7 @@ HdrVividMetadata hdr_vivid_sei_to_metadata(CBitstreamReader& br)
 
       if (params.tone_mapping_mode_flag)
       {
-        // tone_mapping_param_num: 1 bit → actual = value + 1, range 1~2
+        // tone_mapping_param_num: 1 bit -> actual = value + 1, range 1~2
         params.tone_mapping_param_num = br.ReadBits(1) + 1;
 
         for (uint8_t i = 0; i < params.tone_mapping_param_num; i++)
@@ -86,7 +86,7 @@ HdrVividMetadata hdr_vivid_sei_to_metadata(CBitstreamReader& br)
 
           if (tm.three_Spline_enable_flag)
           {
-            // three_Spline_num: 1 bit → actual = value + 1, range 1~2
+            // three_Spline_num: 1 bit -> actual = value + 1, range 1~2
             tm.three_Spline_num = br.ReadBits(1) + 1;
 
             for (uint8_t j = 0; j < tm.three_Spline_num; j++)

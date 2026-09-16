@@ -102,7 +102,7 @@ struct HdrVividMetadata
  * Parse HDR Vivid SEI payload into structured metadata.
  * The reader MUST be positioned at the start of the T.35 payload
  * (itu_t_t35_country_code). This matches hdr10plus_sei_to_metadata
- * convention — the full T.35 header is consumed internally.
+ * convention -- the full T.35 header is consumed internally.
  *
  * @param br BitstreamReader positioned at T.35 country_code
  * @return Parsed HDR Vivid metadata

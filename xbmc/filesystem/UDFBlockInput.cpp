@@ -137,17 +137,6 @@ int CUDFBlockInput::Read(
   return static_cast<int>(read / UDF_BLOCK_SIZE);
 }
 
-void CUDFBlockInput::SetReadRate(uint32_t rate)
-{
-  if (!m_bi || !m_bi->fp)
-    return;
-
-  // Increased by 10%, as CDVDInputStreamFile does: the rate the player reports is what it is
-  // consuming, and the cache needs to stay ahead of it
-  uint32_t maxrate = static_cast<uint32_t>(1.1 * rate);
-
-  m_bi->fp->IoControl(XFILE::IOCTRL_CACHE_SETRATE, &maxrate);
-}
 
 udfread_block_input* CUDFBlockInput::GetBlockInput(const std::string& file)
 {

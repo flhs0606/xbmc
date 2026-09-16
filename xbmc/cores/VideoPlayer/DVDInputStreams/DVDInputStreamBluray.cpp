@@ -763,7 +763,6 @@ void CDVDInputStreamBluray::Close()
 
   aml_set_bdj_overlay_active(false);
 
-  m_pstream.reset();
   m_rootPath.clear();
 }
 
@@ -1557,41 +1556,6 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
   return result;
 }
 
-int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
-{
-  return ReadBlocksDirect(buf, lba, num_blocks);
-}
-
-int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks)
-{
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream || !buf || num_blocks <= 0)
-    return -1;
-
-  const int64_t offset = static_cast<int64_t>(lba) * 2048;
-  const size_t totalBytes = static_cast<size_t>(num_blocks) * 2048;
-
-  if (totalBytes > static_cast<size_t>(std::numeric_limits<int>::max()))
-    return -1;
-
-  std::lock_guard lock(m_readBlocksLock);
-
-  if (lpstream->Seek(offset, SEEK_SET) < 0)
-    return -1;
-
-  size_t totalRead = 0;
-  while (totalRead < totalBytes)
-  {
-    int chunk = lpstream->Read(buf + totalRead, static_cast<int>(totalBytes - totalRead));
-    if (chunk < 0)
-      return -1;
-    if (chunk == 0)
-      break;
-    totalRead += static_cast<size_t>(chunk);
-  }
-
-  return static_cast<int>(totalRead / 2048);
-}
 
 
 static uint8_t  clamp(double v)
@@ -2561,15 +2525,6 @@ bool CDVDInputStreamBluray::CanSeek()
   return !IsInMenu() || !m_isInMainMenu;
 }
 
-void CDVDInputStreamBluray::SetReadRate(uint32_t rate)
-{
-#if defined(HAS_UDFREAD)
-  // libbluray reads the disc through the UDF volume, so unlike a stream of our own there is no
-  // file here to pass the rate to - the cache that needs it is the one under the volume.
-  if (m_udfMount)
-    m_udfMount->SetReadRate(rate);
-#endif
-}
 
 MenuType CDVDInputStreamBluray::GetSupportedMenuType()
 {
@@ -2920,23 +2875,6 @@ void CDVDInputStreamBluray::ApplyAudioCapability() const
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_AUDIO_CAP, acap);
 }
 
-bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
-{
-  logM(LOGINFO, "CDVDInputStreamBluray::OpenStream - opening ISO stream for {}",
-       CURL::GetRedacted(item.GetPath()));
-
-  m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
-                                                              READ_CHUNKED | READ_NO_CACHE);
-
-  if (!m_pstream->Open())
-  {
-    CLog::Log(LOGERROR, "Error opening image file {}", CURL::GetRedacted(item.GetPath()));
-    Close();
-    return false;
-  }
-
-  return true;
-}
 
 bool CDVDInputStreamBluray::GetState(std::string& xmlstate)
 {

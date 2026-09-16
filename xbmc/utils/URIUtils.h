@@ -243,7 +243,7 @@ public:
    */
   static std::string GetBlurayPlaylistPath(const std::string& path, int playlist = -1);
 
-  /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the playlist number.
+  /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the root bluray path (bluray://...).
    */
   static std::string GetBlurayPath(const std::string& path);
 

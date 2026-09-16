@@ -185,10 +185,6 @@ std::shared_ptr<CUDFContext> CUDFContext::Get(const std::string& image)
   return context;
 }
 
-void CUDFContext::SetReadRate(uint32_t rate)
-{
-  m_blockInput.SetReadRate(rate);
-}
 
 CUDFMount::CUDFMount(const std::string& path)
 {
@@ -196,8 +192,3 @@ CUDFMount::CUDFMount(const std::string& path)
     m_context = CUDFContext::Get(url.GetHostName());
 }
 
-void CUDFMount::SetReadRate(uint32_t rate) const
-{
-  if (m_context)
-    m_context->SetReadRate(rate);
-}

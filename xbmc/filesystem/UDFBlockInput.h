@@ -46,13 +46,6 @@ public:
 
   udfread_block_input* GetBlockInput(const std::string& file);
 
-  /*!
-   \brief Tell the image's file cache how fast its content is being consumed.
-   Mounting and reading a volume goes through this one file, so this is where the cache that
-   reads the image ahead sits - not on any stream above it.
-   \param rate bytes per second
-   */
-  void SetReadRate(uint32_t rate);
 
 private:
   struct UDF_BI;

@@ -1882,13 +1882,11 @@ bool CAMLCodec::OpenDecoder(bool restart)
   am_private->gcodec.dec_mode    = STREAM_TYPE_FRAME;
   am_private->gcodec.video_path  = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
 
-  StreamHdrType effectiveHdrType = m_hints.hdrType;
-  if (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR_VIVID)
+  if (hints.hdrType == StreamHdrType::HDR_TYPE_HDR_VIVID)
   {
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     if (settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
     {
-      effectiveHdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
       hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
       hints.dovi.dv_profile = 8;
       hints.dovi.dv_bl_signal_compatibility_id = 1;
@@ -1898,13 +1896,13 @@ bool CAMLCodec::OpenDecoder(bool restart)
 
   if (!restart)
   {
-    aml_dv_open(effectiveHdrType, m_hints.bitdepth, m_hints.colorPrimaries);
+    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries);
   }
 
   SetProcessInfoVideoDetails();
 
   // Setup Codec for DV Content
-  if (((hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) || (effectiveHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)) && aml_is_dv_enable())
+  if ((hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) && aml_is_dv_enable())
   {
     am_private->gcodec.dv_enable = 1;
     if (!hints.interlaced && !m_dvblpathVfmMap.empty())
