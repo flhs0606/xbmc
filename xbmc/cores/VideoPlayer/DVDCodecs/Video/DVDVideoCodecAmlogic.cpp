@@ -807,93 +807,145 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
   else
     ++m_dlStatBL;
 
-  const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
-    ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
-    : 24.0;
-  const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
-  const double match_tolerance = frame_period * 0.8;
-  const size_t calculated_depth = static_cast<size_t>((fps > 0.0 ? fps : 24.0) * 4.5);
-  const size_t max_queue_depth = std::clamp(calculated_depth, static_cast<size_t>(128), static_cast<size_t>(384));
+  const bool isFel = (m_hints.dovi_el_type == DOVIELType::TYPE_FEL);
 
-  auto matchIt = m_packages.end();
-  double best_delta = -1.0;
-  bool positional_match = false;
-  for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
+  if (!isFel)
   {
-    if (it->isELPackage == packet.isELPackage)
-      continue;
-    if (packet.pts == DVD_NOPTS_VALUE || it->pts == DVD_NOPTS_VALUE)
-      continue;
-    const double raw_delta = packet.pts - it->pts;
-    const double delta = raw_delta < 0.0 ? -raw_delta : raw_delta;
-    if (best_delta < 0.0 || delta < best_delta)
+    // =========================================================================
+    // MEL / Initial unconfirmed phase: FIFO in-order pairing (aligns with pannal-xbmc).
+    // =========================================================================
+    if (!m_packages.empty())
     {
-      best_delta = delta;
-      matchIt = it;
-    }
-  }
-
-  if (matchIt == m_packages.end() && packet.pts == DVD_NOPTS_VALUE)
-  {
-    for (auto rit = m_packages.rbegin(); rit != m_packages.rend(); ++rit)
-    {
-      if (rit->isELPackage != packet.isELPackage)
+      auto& frontPacket = m_packages.front();
+      if (frontPacket.isELPackage != packet.isELPackage)
       {
-        matchIt = std::prev(rit.base());
-        positional_match = true;
-        break;
+        if (packet.isELPackage)
+          dual_layer_converted = m_bitstream->Convert(frontPacket.buffer.GetData(), frontPacket.size, pData, iSize, packet.pts);
+        else
+          dual_layer_converted = m_bitstream->Convert(pData, iSize, frontPacket.buffer.GetData(), frontPacket.size, packet.pts);
+
+        if (dual_layer_converted)
+        {
+          if (m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE &&
+              m_hints.codec == AV_CODEC_ID_HEVC)
+          {
+            m_pendingMeta = m_streamMeta;
+            if (packet.isELPackage)
+            {
+              AMLLatchHevcDoviRpu(pData, iSize, m_nalLengthSize, m_pendingMeta);
+              AMLLatchHevcSei(frontPacket.buffer.GetData(), frontPacket.size, m_nalLengthSize,
+                              m_pendingMeta);
+            }
+            else
+            {
+              AMLLatchHevcDoviRpu(frontPacket.buffer.GetData(), frontPacket.size, m_nalLengthSize,
+                                  m_pendingMeta);
+              AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
+            }
+            if (!m_pendingMeta.hdrMdcv.empty())
+              m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
+            if (!m_pendingMeta.hdrCll.empty())
+              m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
+          }
+
+          ++m_dlStatPaired;
+          RecycleDualLayerPacket(std::move(frontPacket));
+          m_packages.pop_front();
+        }
       }
     }
   }
-
-  const bool have_match =
-      (matchIt != m_packages.end()) && (positional_match || best_delta <= match_tolerance);
-
-  if (positional_match)
-    LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
-                          "dlpair: positional pairing for pts-less packet (isEL={})",
-                          packet.isELPackage);
-
-  if (have_match)
+  else
   {
-    DLDemuxPacket& dualLayerPacket = *matchIt;
+    // =========================================================================
+    // Confirmed FEL phase: Strict PTS nearest-neighbor matching with dynamic tolerance.
+    // =========================================================================
+    const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+      ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
+      : 24.0;
+    const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
+    const double match_tolerance = frame_period * 0.8;
 
-    if (packet.isELPackage)
-      dual_layer_converted = m_bitstream->Convert(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, pData, iSize, packet.pts);
-    else
-      dual_layer_converted = m_bitstream->Convert(pData, iSize, dualLayerPacket.buffer.GetData(), dualLayerPacket.size, packet.pts);
-
-    if (dual_layer_converted && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE &&
-        m_hints.codec == AV_CODEC_ID_HEVC)
+    auto matchIt = m_packages.end();
+    double best_delta = -1.0;
+    bool positional_match = false;
+    for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
     {
-      m_pendingMeta = m_streamMeta;
+      if (it->isELPackage == packet.isELPackage)
+        continue;
+      if (packet.pts == DVD_NOPTS_VALUE || it->pts == DVD_NOPTS_VALUE)
+        continue;
+      const double raw_delta = packet.pts - it->pts;
+      const double delta = raw_delta < 0.0 ? -raw_delta : raw_delta;
+      if (best_delta < 0.0 || delta < best_delta)
+      {
+        best_delta = delta;
+        matchIt = it;
+      }
+    }
+
+    if (matchIt == m_packages.end() && packet.pts == DVD_NOPTS_VALUE)
+    {
+      for (auto rit = m_packages.rbegin(); rit != m_packages.rend(); ++rit)
+      {
+        if (rit->isELPackage != packet.isELPackage)
+        {
+          matchIt = std::prev(rit.base());
+          positional_match = true;
+          break;
+        }
+      }
+    }
+
+    const bool have_match =
+        (matchIt != m_packages.end()) && (positional_match || best_delta <= match_tolerance);
+
+    if (positional_match)
+      LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
+                            "dlpair: positional pairing for pts-less packet (isEL={})",
+                            packet.isELPackage);
+
+    if (have_match)
+    {
+      DLDemuxPacket& dualLayerPacket = *matchIt;
+
       if (packet.isELPackage)
-      {
-        AMLLatchHevcDoviRpu(pData, iSize, m_nalLengthSize, m_pendingMeta);
-        AMLLatchHevcSei(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                        m_pendingMeta);
-      }
+        dual_layer_converted = m_bitstream->Convert(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, pData, iSize, packet.pts);
       else
-      {
-        AMLLatchHevcDoviRpu(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                            m_pendingMeta);
-        AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
-      }
-      if (!m_pendingMeta.hdrMdcv.empty())
-        m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
-      if (!m_pendingMeta.hdrCll.empty())
-        m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
-    }
+        dual_layer_converted = m_bitstream->Convert(pData, iSize, dualLayerPacket.buffer.GetData(), dualLayerPacket.size, packet.pts);
 
-    if (dual_layer_converted)
-    {
-      ++m_dlStatPaired;
-      RecycleDualLayerPacket(std::move(*matchIt));
-      m_packages.erase(matchIt);
+      if (dual_layer_converted && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE &&
+          m_hints.codec == AV_CODEC_ID_HEVC)
+      {
+        m_pendingMeta = m_streamMeta;
+        if (packet.isELPackage)
+        {
+          AMLLatchHevcDoviRpu(pData, iSize, m_nalLengthSize, m_pendingMeta);
+          AMLLatchHevcSei(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
+                          m_pendingMeta);
+        }
+        else
+        {
+          AMLLatchHevcDoviRpu(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
+                              m_pendingMeta);
+          AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
+        }
+        if (!m_pendingMeta.hdrMdcv.empty())
+          m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
+        if (!m_pendingMeta.hdrCll.empty())
+          m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
+      }
+
+      if (dual_layer_converted)
+      {
+        ++m_dlStatPaired;
+        RecycleDualLayerPacket(std::move(*matchIt));
+        m_packages.erase(matchIt);
+      }
     }
+    else if (best_delta >= 0.0)
+      m_dlStatMissDelta = best_delta;
   }
-  else if (best_delta >= 0.0)
-    m_dlStatMissDelta = best_delta;
 
   if (!dual_layer_converted)
   {
@@ -907,6 +959,12 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
     m_packages.emplace_back(std::move(queuedPacket));
   }
 
+  // 128 packets provide ~5.3s interleaving buffer at 24fps and ~2.1s at 60fps.
+  // This safely absorbs M2TS chunk interleaving and network I/O jitter for both
+  // 24fps UHD Blu-ray (FEL/MEL) and 60fps high-framerate MEL streams.
+  constexpr size_t DUAL_LAYER_MAX_QUEUE_DEPTH = 128;
+  const size_t max_queue_depth = DUAL_LAYER_MAX_QUEUE_DEPTH;
+
   while (m_packages.size() > max_queue_depth)
   {
     ++m_dlStatEvicted;
@@ -918,8 +976,11 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
   if (now - m_dlStatLastLog >= CurrentHostFrequency())
   {
     m_dlStatLastLog = now;
+    const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
+    const double match_tolerance = frame_period * 0.8;
     logComponentM(LOGDEBUG, LOGVIDEO,
-                  "dlpair: bl={} el={} paired={} evicted={} depth={} missDeltaMs={:.1f} tolMs={:.1f}",
+                  "dlpair: mode={} bl={} el={} paired={} evicted={} depth={} missDeltaMs={:.1f} tolMs={:.1f}",
+                  isFel ? "FEL-PTS" : "MEL-FIFO",
                   m_dlStatBL, m_dlStatEL, m_dlStatPaired, m_dlStatEvicted, m_packages.size(),
                   m_dlStatMissDelta / 1000.0, match_tolerance / 1000.0);
     m_dlStatBL = 0;

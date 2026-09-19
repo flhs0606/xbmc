@@ -532,25 +532,11 @@ bool CBlurayDirectory::GetPlaylistsInformation(const CURL& url,
 
       ProcessPlaylist(playlists, titleInfo, clips);
 
-      CLog::LogF(LOGDEBUG, "Playlist {}, Duration {}, Langs {}, Subs {}, Clips {} ", playlist,
-                 title->GetVideoInfoTag()->GetDuration(), titleInfo.languages,
-                 fmt::join(titleInfo.pgStreams |
-                               std::views::transform([](const auto& stream)
-                                                     { return stream.language; }),
-                           ","),
-                 fmt::join(titleInfo.clips, ","));
+      // CLog::LogF(LOGDEBUG, "Playlist {}, Duration {}, Langs {}, Subs {}, Clips {} ", playlist, ...);
     }
 
-    // List clip info (automatically sorted as map)
-    for (const auto& c : clips)
-    {
-      const auto& [clip, clipInformation] = c;
-      CLog::LogF(LOGDEBUG, "Clip {:d} duration {:d} - playlists {}", clip,
-                 clipInformation.duration.count() / 1000,
-                 fmt::join(clipInformation.playlists, ","));
-    }
-
-    CLog::LogF(LOGDEBUG, "*** Playlist information End ***");
+    // Disc metadata summary instead of iterating hundreds of clips and playlists
+    CLog::LogF(LOGDEBUG, "*** Playlist information: {} playlists, {} clips ***", playlists.size(), clips.size());
 
     // Nothing could be read from the disc
     // Don't cache in case temporary read error etc.
