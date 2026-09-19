@@ -107,8 +107,8 @@ void RemovePlaylists(std::vector<PlaylistInformation>& playlists,
                      std::string_view reason,
                      Predicate shouldRemove)
 {
-  for (const auto& playlist : playlists | std::views::filter(shouldRemove))
-    LogMoviePlaylist(fmt::format("Rejected ({}) -", reason), playlist);
+  // for (const auto& playlist : playlists | std::views::filter(shouldRemove))
+  //   LogMoviePlaylist(fmt::format("Rejected ({}) -", reason), playlist);
 
   std::erase_if(playlists, shouldRemove);
 }
@@ -123,9 +123,10 @@ void InitialiseMoviePlaylistSearch(std::vector<PlaylistInformation>& playlists,
                          [](const PlaylistInformation& information) { return information; });
 
   CLog::LogF(LOGDEBUG, "*** Movie Search Start ***");
-  CLog::LogF(LOGDEBUG, "Looking for {} - main playlist {}", GetTitlesJobDescription(job),
+  CLog::LogF(LOGDEBUG, "Looking for {} ({} candidate playlists) - main playlist {}",
+             GetTitlesJobDescription(job), playlists.size(),
              mainPlaylist >= 0 ? std::to_string(mainPlaylist) : "unknown");
-  LogMoviePlaylists("Candidate -", playlists);
+  // LogMoviePlaylists("Candidate -", playlists);
 }
 
 //! \brief The sorted durations of a playlist's clips, or none at all if any of them is unknown.

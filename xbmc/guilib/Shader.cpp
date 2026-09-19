@@ -206,8 +206,7 @@ bool LoadProgramBinaryCache(GLuint program, const CShader& vertexShader, const C
     return false;
   }
 
-  CLog::Log(LOGDEBUG, "GL: Loaded program binary cache for {} {}", vertexShader.GetName(),
-            pixelShader.GetName());
+  // CLog::Log(LOGDEBUG, "GL: Loaded program binary cache for {} {}", vertexShader.GetName(), pixelShader.GetName());
   return true;
 }
 

@@ -244,7 +244,7 @@ ScanResult ScanFileForActiveArea(const std::string& filePath,
       filePath.compare(0, 9, "bluray://") == 0 ||
       URIUtils::HasExtension(filePath, ".iso|.img"))
   {
-    logM(LOGWARNING, "skipping unsupported source (empty/plugin/pvr/bluray/iso): {}", filePath);
+    // logM(LOGWARNING, "skipping unsupported source (empty/plugin/pvr/bluray/iso): {}", filePath);
     out.reason = "unsupported-source";
     return out;
   }

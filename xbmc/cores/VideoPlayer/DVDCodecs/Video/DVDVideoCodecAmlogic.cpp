@@ -807,11 +807,13 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
   else
     ++m_dlStatBL;
 
-  const double frame_period = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
-    ? (static_cast<double>(DVD_TIME_BASE) * static_cast<double>(m_hints.fpsscale) / static_cast<double>(m_hints.fpsrate))
-    : (static_cast<double>(DVD_TIME_BASE) / 24.0);
-  const double match_tolerance = std::max(frame_period * 0.5, 25000.0);
-  const size_t max_queue_depth = (m_hints.fpsrate > 45000) ? 96 : 32;
+  const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+    ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
+    : 24.0;
+  const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
+  const double match_tolerance = frame_period * 0.8;
+  const size_t calculated_depth = static_cast<size_t>((fps > 0.0 ? fps : 24.0) * 4.5);
+  const size_t max_queue_depth = std::clamp(calculated_depth, static_cast<size_t>(128), static_cast<size_t>(384));
 
   auto matchIt = m_packages.end();
   double best_delta = -1.0;

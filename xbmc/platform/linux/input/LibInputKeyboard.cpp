@@ -480,8 +480,7 @@ void CLibInputKeyboard::ProcessKey(libinput_event_keyboard *e)
     auto data = m_repeatData.find(dev);
     if (data != m_repeatData.end())
     {
-      CLog::Log(LOGDEBUG, "CLibInputKeyboard::{} - using delay: {}ms repeat: {}ms", __FUNCTION__,
-                data->second.at(0), data->second.at(1));
+      // CLog::Log(LOGDEBUG, "CLibInputKeyboard::{} - using delay: {}ms repeat: {}ms", __FUNCTION__, data->second.at(0), data->second.at(1));
 
       m_repeatRate = data->second.at(1);
       m_repeatTimer.Stop(true);
