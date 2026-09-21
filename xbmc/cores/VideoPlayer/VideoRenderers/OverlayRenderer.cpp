@@ -507,7 +507,7 @@ float CRenderer::ComputeBitmapBlockShift(float blockTop, float blockBottom) cons
     {
       const int pgsSteps = m_pgsVerticalOffsetSteps.load(std::memory_order_acquire);
       const float refHeight = m_rv.Height() * 75.0f / 1080.0f;
-      shift = -static_cast<float>(pgsSteps) * (refHeight * 0.25f);
+      shift = -static_cast<float>(pgsSteps) * (refHeight * 0.125f);
       if (blockTop + shift < m_rv.y1)
         shift = m_rv.y1 - blockTop;
       if (blockBottom + shift > m_rv.y2)
@@ -806,7 +806,7 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
       const int steps = m_pgsVerticalOffsetSteps.load(std::memory_order_relaxed);
       const double frameHeight = static_cast<double>(rOpts.frameHeight);
       const double refHeight = frameHeight * 75.0 / 1080.0;
-      const double perStepPerc = frameHeight > 0 ? refHeight * 0.25 / frameHeight * 100.0 : 0.0;
+      const double perStepPerc = frameHeight > 0 ? refHeight * 0.125 / frameHeight * 100.0 : 0.0;
       rOpts.position = std::clamp(static_cast<double>(steps) * perStepPerc, 0.0, 100.0);
     }
 

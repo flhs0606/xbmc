@@ -238,7 +238,8 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
         m_processInfo.SetVideoInterlaced(false);
     }
     else
-      m_processInfo.SetVideoInterlaced((hint.codecOptions & CODEC_INTERLACED) == CODEC_INTERLACED);
+      m_processInfo.SetVideoInterlaced(((hint.codecOptions & CODEC_INTERLACED) == CODEC_INTERLACED) &&
+                                       !(hint.width > 1920 || hint.height > 1080));
 
     if (isVC1)
       logComponentM(LOGDEBUG, LOGVIDEO,
@@ -1524,7 +1525,8 @@ void CVideoPlayerVideo::CalcFrameRate()
         double calculated = m_fStableFrameRate / m_iFrameRateCount;
         bool skipHalving = (m_hints.codecOptions & CODEC_INTERLACED) &&
                            m_processInfo.IsVideoHwDecoder() &&
-                           calculated > 0 &&
+                           calculated > 24.5 &&
+                           !(m_hints.width > 1920 || m_hints.height > 1080) &&
                            fabs(m_fFrameRate - 2.0 * calculated) < MAXFRAMERATEDIFF;
         if (skipHalving)
         {
@@ -1538,6 +1540,8 @@ void CVideoPlayerVideo::CalcFrameRate()
           m_fFrameRate = calculated;
           m_telecine = false;
           m_bFpsInvalid = false;
+          if (m_hints.width > 1920 || m_hints.height > 1080 || calculated <= 24.5)
+            m_processInfo.SetVideoInterlaced(false);
           m_processInfo.SetVideoFps(static_cast<float>(m_fFrameRate));
         }
       }
