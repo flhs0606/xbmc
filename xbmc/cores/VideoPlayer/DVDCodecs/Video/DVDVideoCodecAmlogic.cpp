@@ -807,6 +807,12 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
   else
     ++m_dlStatBL;
 
+  const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+    ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
+    : 24.0;
+  const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
+  const double match_tolerance = frame_period * 0.8;
+
   const bool isFel = (m_hints.dovi_el_type == DOVIELType::TYPE_FEL);
 
   if (!isFel)
@@ -860,12 +866,6 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
     // =========================================================================
     // Confirmed FEL phase: Strict PTS nearest-neighbor matching with dynamic tolerance.
     // =========================================================================
-    const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
-      ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
-      : 24.0;
-    const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
-    const double match_tolerance = frame_period * 0.8;
-
     auto matchIt = m_packages.end();
     double best_delta = -1.0;
     bool positional_match = false;
@@ -976,8 +976,6 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
   if (now - m_dlStatLastLog >= CurrentHostFrequency())
   {
     m_dlStatLastLog = now;
-    const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
-    const double match_tolerance = frame_period * 0.8;
     logComponentM(LOGDEBUG, LOGVIDEO,
                   "dlpair: mode={} bl={} el={} paired={} evicted={} depth={} missDeltaMs={:.1f} tolMs={:.1f}",
                   isFel ? "FEL-PTS" : "MEL-FIFO",

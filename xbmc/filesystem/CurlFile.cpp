@@ -459,6 +459,7 @@ void CCurlFile::Close()
   delete m_oldState;
   m_oldState = nullptr;
 
+  m_origUrl.clear();
   m_url.clear();
   m_referer.clear();
   m_cookie.clear();
@@ -1136,27 +1137,10 @@ bool CCurlFile::Open(const CURL& url)
     throw new CRedirectException(new CShoutcastFile);
   }
 
+  // Modern Kodi uses CFileCache ahead of CCurlFile. Legacy CReadState multisession
+  // creates concurrent Range connections that violate CDN token concurrency limits
+  // (e.g. 115 CDN c=2 limit) and cause HTTP 403 on seek. Keep multisession disabled.
   m_multisession = false;
-  if(url2.IsProtocol("http") || url2.IsProtocol("https"))
-  {
-    m_multisession = true;
-    if(m_state->m_httpheader.GetValue("Server").find("Portable SDK for UPnP devices") != std::string::npos)
-    {
-      CLog::Log(LOGWARNING,
-                "CCurlFile::{} - <{}> Disabling multi session due to broken libupnp server",
-                __FUNCTION__, redactPath);
-      m_multisession = false;
-    }
-    // Discard multisession for disc image HTTP(S) sources accessed via CDN.
-    // Legacy CReadState multisession creates concurrent Range connections
-    // that exhaust limited-use CDN tokens (e.g. c=2 per URL), triggering 403.
-    if (m_multisession && URIUtils::IsDiscImage(url2.GetFileName()))
-    {
-      CLog::Log(LOGDEBUG, "CCurlFile::{} - <{}> Disabling multi session for disc image source",
-                __FUNCTION__, redactPath);
-      m_multisession = false;
-    }
-  }
 
   if(StringUtils::EqualsNoCase(m_state->m_httpheader.GetValue("Transfer-Encoding"), "chunked"))
     m_state->m_fileSize = 0;
@@ -1182,6 +1166,7 @@ bool CCurlFile::Open(const CURL& url)
       std::string redactEfpath = CURL::GetRedacted(efurl);
       CLog::Log(LOGDEBUG, "CCurlFile::{} - <{}> Effective URL is {}", __FUNCTION__, redactPath,
                 redactEfpath);
+      m_origUrl = m_url;
     }
     m_url = efurl;
   }
@@ -1473,9 +1458,35 @@ int64_t CCurlFile::Seek(int64_t iFilePosition, int iWhence)
   m_state->m_bRetry = m_allowRetry;
 
   long response = m_state->Connect(m_bufferSize);
-  if(response < 0 && (m_state->m_fileSize == 0 || m_state->m_fileSize != m_state->m_filePos))
+
+  // If seek on effective CDN URL failed with 4xx (e.g. 403 token expired / rejected)
+  // and we have the original redirection URL, re-query the original URL to obtain a fresh 302 token.
+  if (response >= 400 && response < 500 && response != 416 && response != 406 &&
+      !m_origUrl.empty() && m_origUrl != m_url)
   {
-    if(m_multisession)
+    CLog::Log(LOGWARNING,
+              "CCurlFile::{} - HTTP {} on CDN URL <{}>, re-resolving via original URL <{}>",
+              __FUNCTION__, response, CURL::GetRedacted(m_url), CURL::GetRedacted(m_origUrl));
+
+    m_state->Disconnect();
+    m_url = m_origUrl;
+    SetCommonOptions(m_state);
+    SetRequestHeaders(m_state);
+    m_state->m_filePos = nextPos;
+    m_state->m_sendRange = true;
+    m_state->m_bRetry = m_allowRetry;
+
+    response = m_state->Connect(m_bufferSize);
+
+    std::string newEfurl = GetInfoString(CURLINFO_EFFECTIVE_URL);
+    if (!newEfurl.empty())
+      m_url = newEfurl;
+  }
+
+  if ((response < 0 || response >= 400) &&
+      (m_state->m_fileSize == 0 || m_state->m_fileSize != m_state->m_filePos))
+  {
+    if (m_multisession)
     {
       if (m_oldState)
       {

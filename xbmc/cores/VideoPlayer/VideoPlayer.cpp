@@ -1021,9 +1021,12 @@ bool CVideoPlayer::OpenInputStream()
     // find any available external subtitles
     std::vector<std::string> filenames;
 
-    if (!URIUtils::IsUPnP(m_item.GetPath()) &&
+    const bool isStrm = URIUtils::HasExtension(m_item.GetPath(), ".strm") ||
+                        URIUtils::HasExtension(m_item.GetDynPath(), ".strm");
+    const std::string& scanPath = isStrm ? m_item.GetPath() : m_item.GetDynPath();
+    if (!URIUtils::IsUPnP(scanPath) &&
         !m_item.GetProperty("no-ext-subs-scan").asBoolean(false))
-      CUtil::ScanForExternalSubtitles(m_item.GetDynPath(), filenames);
+      CUtil::ScanForExternalSubtitles(scanPath, filenames);
 
     // load any subtitles from file item
     std::string key("subtitle:1");
@@ -6617,7 +6620,6 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       m_bdFeatureTagsFired = true;
       SetAVChange("FeatureStart");
     }
-    m_renderManager.SetActiveAreaScanSuspended(!m_bdFeatureStable);
   }
 
   state.dts = DVD_NOPTS_VALUE;
@@ -6635,8 +6637,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::shared_ptr<CDVDInputStream::IMenus> pMenu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
 
-  if (pMenu && m_pInputStream && !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
-    m_renderManager.SetActiveAreaScanSuspended(pMenu->IsInMenu());
+
 
   if (m_pDemuxer)
   {

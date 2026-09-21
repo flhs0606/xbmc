@@ -70,14 +70,18 @@ bool CVideoGUIInfo::InitCurrentItem(CFileItem *item)
 
     CLog::Log(LOGDEBUG, "CVideoGUIInfo::InitCurrentItem({})", CURL::GetRedacted(item->GetPath()));
 
-    // For disc images (ISO/IMG/UDF) and Blu-ray streams, skip thumb and streamdetails
+    // For disc images, Blu-ray streams, .strm items and internet streams, skip thumb and streamdetails
     // extraction on the GUI thread to avoid concurrent VFS opens against single-connection
-    // media sources (e.g. CDN-signed HTTP ISOs where concurrent Range workers trigger 403).
+    // media sources (e.g. CDN-signed HTTP sources where concurrent Range workers trigger 403).
     const bool isDisc = item->IsDiscImage() || URIUtils::IsDiscImage(item->GetDynPath()) ||
                         URIUtils::IsBluray(item->GetDynPath()) || URIUtils::IsBluray(item->GetPath());
+    const bool isStrmOrStream = URIUtils::HasExtension(item->GetPath(), ".strm") ||
+                                URIUtils::HasExtension(item->GetDynPath(), ".strm") ||
+                                item->IsInternetStream() ||
+                                URIUtils::IsInternetStream(item->GetDynPath());
 
     // Find a thumb for this file.
-    if (!isDisc && !item->HasArt("thumb"))
+    if (!isDisc && !isStrmOrStream && !item->HasArt("thumb"))
     {
       CVideoThumbLoader loader;
       loader.LoadItem(item);

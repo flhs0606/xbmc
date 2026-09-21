@@ -156,6 +156,7 @@ namespace XFILE
       int64_t m_writeOffset = 0;
 
       std::string m_url;
+      std::string m_origUrl;
       std::string m_userAgent;
       ProxyType m_proxytype = PROXY_HTTP;
       std::string m_proxyhost;

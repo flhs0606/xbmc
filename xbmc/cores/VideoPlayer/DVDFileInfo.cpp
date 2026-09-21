@@ -264,8 +264,11 @@ bool CDVDFileInfo::CanExtract(const CFileItem& fileItem)
       // plugin path not fully resolved
       URIUtils::IsPlugin(fileItem.GetDynPath()) ||
       URIUtils::IsUPnP(fileItem.GetPath()) ||
+      URIUtils::HasExtension(fileItem.GetPath(), ".strm") ||
+      URIUtils::HasExtension(fileItem.GetDynPath(), ".strm") ||
       (fileItem.IsInternetStream() && // For internet protocol streams - if it is HTTP or FTP and on lan then ok to extract, otherwise not ok.
        (!((URIUtils::IsFTP(fileItem.GetPath()) || URIUtils::IsHTTP(fileItem.GetPath())) && URIUtils::IsOnLAN(fileItem.GetPath())))) ||
+      (URIUtils::IsInternetStream(fileItem.GetDynPath()) && !URIUtils::IsOnLAN(fileItem.GetDynPath())) ||
       fileItem.IsDiscStub() ||
       fileItem.IsPlayList())
     return false;
