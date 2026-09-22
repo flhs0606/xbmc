@@ -153,6 +153,8 @@ private:
   uint32_t m_dlStatPaired = 0;
   uint32_t m_dlStatEvicted = 0;
   double m_dlStatMissDelta = 0.0;
+  double m_dlLastPts{DVD_NOPTS_VALUE};
+  double m_dlLastDts{DVD_NOPTS_VALUE};
   int64_t m_dlStatLastLog = 0;
 
   bool      m_last_added = true;
