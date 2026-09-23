@@ -152,7 +152,7 @@ void CAdvancedSettings::Initialize()
   m_videoUseTimeSeeking = true;
   m_videoSubtitleAsyncParse = true;
   m_videoAsyncFullscreenOSD = 2;
-  m_videoAsyncVideoLayerRender = true;
+  m_videoAsyncVideoLayerRender = false;
   m_videoTimeSeekForward = 30;
   m_videoTimeSeekBackward = -30;
   m_videoTimeSeekForwardBig = 600;
