@@ -449,7 +449,7 @@ void CAdvancedSettings::Initialize()
 
   m_canWindowed = true;
   m_guiVisualizeDirtyRegions = false;
-  m_guiAlgorithmDirtyRegions = DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE;
+  m_guiAlgorithmDirtyRegions = DIRTYREGION_SOLVER_COST_REDUCTION;
   m_guiAlgorithmDirtyRegionsIsExplicit = false;
   m_guiSmartRedraw = false;
   m_guiBufferAgePartialRedraw = 1;
@@ -1618,9 +1618,9 @@ void CAdvancedSettings::ApplyDirtyRegionAlgorithmForSkin(const std::string& skin
   if (m_guiAlgorithmDirtyRegionsIsExplicit)
     return;
 
-  const int algorithm = (skinId == "skin.avdvplus.estuary")
-                            ? DIRTYREGION_SOLVER_COST_REDUCTION
-                            : DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE;
+  // Default to cost-reduction dirty region solver (partial updates) for all skins,
+  // relieving GPU fillrate while preserving explicit user overrides from advancedsettings.xml.
+  const int algorithm = DIRTYREGION_SOLVER_COST_REDUCTION;
 
   if (algorithm == m_guiAlgorithmDirtyRegions)
     return;

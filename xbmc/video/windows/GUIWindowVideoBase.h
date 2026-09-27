@@ -67,6 +67,7 @@ public:
                             bool allowReplaceLabels = true);
 
 protected:
+  void FrameMove() override;
   void OnScan(const std::string& strPath, bool scanAll = false);
   bool Update(const std::string &strDirectory, bool updateFilterPath = true) override;
   bool GetDirectory(const std::string &strDirectory, CFileItemList &items) override;

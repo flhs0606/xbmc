@@ -373,14 +373,14 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_guiWaitGpuBeforeSwap{2};
     bool m_guiSrgbHdrComposite{true};
     bool m_guiCompositeDither{true};
-    bool m_guiAsyncTextureUpload{true};
+    bool m_guiAsyncTextureUpload{false};
     bool m_guiVideoLayoutTransparent{false};
     int m_guiSkinHdrFbo{0};
     int m_guiOsdGuestComposite{0};
     int m_guiOsdTrace{0};
     bool m_guiMipMapping;
     float m_guiMipMappingSharpen;
-    bool m_guiMinifiedMipmapping{true};
+    bool m_guiMinifiedMipmapping{false};
     unsigned int m_guiAVChangeFlagTimeout;
     unsigned int m_addonPackageFolderSize;
 

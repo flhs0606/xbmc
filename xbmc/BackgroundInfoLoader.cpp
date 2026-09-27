@@ -13,6 +13,7 @@
 #include "threads/Thread.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <mutex>
 
 CBackgroundInfoLoader::CBackgroundInfoLoader() = default;
@@ -27,6 +28,16 @@ void CBackgroundInfoLoader::Reset()
   m_pVecItems = nullptr;
   m_vecItems.clear();
   m_bIsLoading = false;
+  m_hasPriority.store(false, std::memory_order_relaxed);
+  m_priorityStart.store(-1, std::memory_order_relaxed);
+  m_priorityCount.store(0, std::memory_order_relaxed);
+}
+
+void CBackgroundInfoLoader::SetPriorityRange(int start, int count)
+{
+  m_priorityStart.store(std::max(0, start), std::memory_order_relaxed);
+  m_priorityCount.store(std::max(0, count), std::memory_order_relaxed);
+  m_hasPriority.store(true, std::memory_order_release);
 }
 
 void CBackgroundInfoLoader::Run()
@@ -38,14 +49,12 @@ void CBackgroundInfoLoader::Run()
       OnLoaderStart();
 
       // Stage 1: All "fast" stuff we have already cached
-      for (std::vector<CFileItemPtr>::const_iterator iter = m_vecItems.begin(); iter != m_vecItems.end(); ++iter)
-      {
-        const CFileItemPtr& pItem = *iter;
-
-        // Ask the callback if we should abort
-        if ((m_pProgressCallback && m_pProgressCallback->Abort()) || m_bStop)
-          break;
-
+      auto processItemCached = [&](size_t idx) {
+        if (idx >= m_vecItems.size())
+          return;
+        const CFileItemPtr& pItem = m_vecItems[idx];
+        if (!pItem)
+          return;
         try
         {
           if (LoadItemCached(pItem.get()) && m_pObserver)
@@ -57,6 +66,29 @@ void CBackgroundInfoLoader::Run()
                     "CBackgroundInfoLoader::LoadItemCached - Unhandled exception for item {}",
                     CURL::GetRedacted(pItem->GetPath()));
         }
+      };
+
+      size_t iterIdx = 0;
+      while (iterIdx < m_vecItems.size())
+      {
+        if ((m_pProgressCallback && m_pProgressCallback->Abort()) || m_bStop)
+          break;
+
+        // Prioritize viewport items requested by the UI thread
+        if (m_hasPriority.exchange(false, std::memory_order_acq_rel))
+        {
+          const int pStart = m_priorityStart.load(std::memory_order_relaxed);
+          const int pCount = m_priorityCount.load(std::memory_order_relaxed);
+          const int pEnd = std::min(static_cast<int>(m_vecItems.size()), pStart + pCount);
+          for (int p = pStart; p < pEnd; ++p)
+          {
+            if ((m_pProgressCallback && m_pProgressCallback->Abort()) || m_bStop)
+              break;
+            processItemCached(static_cast<size_t>(p));
+          }
+        }
+
+        processItemCached(iterIdx++);
       }
 
       // Stage 2: All "slow" stuff that we need to lookup

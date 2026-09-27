@@ -28,6 +28,7 @@
 #include "filesystem/Directory.h"
 #include "filesystem/MultiPathDirectory.h"
 #include "filesystem/VideoDatabaseDirectory.h"
+#include "guilib/GUIBaseContainer.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIKeyboardFactory.h"
 #include "guilib/GUIWindowManager.h"
@@ -93,6 +94,22 @@ CGUIWindowVideoBase::CGUIWindowVideoBase(int id, const std::string &xmlFile)
 }
 
 CGUIWindowVideoBase::~CGUIWindowVideoBase() = default;
+
+void CGUIWindowVideoBase::FrameMove()
+{
+  CGUIMediaWindow::FrameMove();
+
+  // Prioritize artwork loading for visible viewport items in the active container
+  if (m_thumbLoader.IsLoading() && m_guiState)
+  {
+    const CGUIControl* control = GetControl(m_guiState->GetViewAsControl());
+    const auto container = dynamic_cast<const CGUIBaseContainer*>(control);
+    if (container)
+    {
+      m_thumbLoader.SetPriorityRange(container->GetOffset(), container->GetItemsPerPage() + 10);
+    }
+  }
+}
 
 bool CGUIWindowVideoBase::OnAction(const CAction &action)
 {

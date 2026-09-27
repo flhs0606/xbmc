@@ -242,7 +242,26 @@ bool CTexture::LoadIImage(IImage* pImage,
   if (pImage->Width() == 0 || pImage->Height() == 0)
     return false;
 
-  Allocate(pImage->Width(), pImage->Height(), XB_FMT_A8R8G8B8);
+  // Scale down proportionally if destination bounds (width, height) are smaller
+  // than image source dimensions to avoid excessive memory allocations.
+  unsigned int targetWidth = pImage->Width();
+  unsigned int targetHeight = pImage->Height();
+  if (width > 0 && height > 0 && (targetWidth > width || targetHeight > height))
+  {
+    const float ratio = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
+    if (targetHeight > height)
+    {
+      targetHeight = height;
+      targetWidth = static_cast<unsigned int>(targetHeight * ratio + 0.5f);
+    }
+    if (targetWidth > width)
+    {
+      targetWidth = width;
+      targetHeight = static_cast<unsigned int>(targetWidth / ratio + 0.5f);
+    }
+  }
+
+  Allocate(targetWidth, targetHeight, XB_FMT_A8R8G8B8);
 
   if (m_pixels == nullptr)
     return false;
@@ -256,8 +275,8 @@ bool CTexture::LoadIImage(IImage* pImage,
   m_hasAlpha = pImage->hasAlpha();
   m_originalWidth = pImage->originalWidth();
   m_originalHeight = pImage->originalHeight();
-  m_imageWidth = pImage->Width();
-  m_imageHeight = pImage->Height();
+  m_imageWidth = targetWidth;
+  m_imageHeight = targetHeight;
 
   ClampToEdge();
 

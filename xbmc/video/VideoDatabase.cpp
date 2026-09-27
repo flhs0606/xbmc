@@ -106,65 +106,102 @@ void CVideoDatabase::AddMissingColumns()
   if (nullptr == m_pDB || nullptr == m_pDS)
     return;
 
-  AddMissingColumn("streamdetails", "strHdrTypeAlt", "text");
-  AddMissingColumn("streamdetails", "strDvProfile", "text");
-  AddMissingColumn("streamdetails", "strAudioProfile", "text");
-  AddMissingColumn("streamdetails", "iAudioObjects", "integer");
-  AddMissingColumn("streamdetails", "iAudioObjectChannels", "integer");
-  AddMissingColumn("streamdetails", "iAudioBedChannels", "integer");
-
+  // Check if schema migration was already completed to avoid scanning/updating
+  // hundreds of thousands of streamdetails rows on every startup.
+  bool needsMigration = false;
   try
   {
-    m_pDS->exec("UPDATE streamdetails SET strHdrType=LOWER(strHdrType) WHERE strHdrType IS NOT NULL");
-    m_pDS->exec(
-        "UPDATE streamdetails SET strHdrTypeAlt=LOWER(strHdrTypeAlt) WHERE strHdrTypeAlt IS NOT NULL");
-    m_pDS->exec("UPDATE streamdetails SET strHdrType='hdr10plus' WHERE strHdrType='hdr10+'");
+    m_pDS->query("SELECT strDvProfile FROM streamdetails LIMIT 1");
+    m_pDS->close();
   }
   catch (...)
   {
-    CLog::Log(LOGERROR, "{} unable to migrate hdr10+ stream details", __FUNCTION__);
+    needsMigration = true;
+  }
+
+  if (!needsMigration)
+  {
+    s_checkedDatabase = databaseFolder;
+    return;
   }
 
   try
   {
-    static const std::pair<const char*, const char*> codecMigration[] = {
-        {"truehd_atmos", "truehd"},      {"eac3_ddp_atmos", "eac3"},
-        {"dtshd_ma_x", "dtshd_ma"},      {"dtshd_ma_x_imax", "dtshd_ma"},
-        {"dts_es", "dca"},               {"dts_96_24", "dca"},
-        {"dts_express", "dca"},          {"aac_lc", "aac"},
-        {"he_aac", "aac"},               {"he_aac_v2", "aac"},
-        {"aac_ssr", "aac"},              {"aac_ltp", "aac"}};
+    m_pDS->exec("BEGIN TRANSACTION");
 
-    for (const auto& [extended, canonical] : codecMigration)
+    AddMissingColumn("streamdetails", "strHdrTypeAlt", "text");
+    AddMissingColumn("streamdetails", "strDvProfile", "text");
+    AddMissingColumn("streamdetails", "strAudioProfile", "text");
+    AddMissingColumn("streamdetails", "iAudioObjects", "integer");
+    AddMissingColumn("streamdetails", "iAudioObjectChannels", "integer");
+    AddMissingColumn("streamdetails", "iAudioBedChannels", "integer");
+
+    try
     {
-      const std::string detail = StreamUtils::GetCodecDetail(extended);
-      m_pDS->exec(PrepareSQL("UPDATE streamdetails SET strAudioProfile="
-                             "CASE WHEN strAudioProfile IS NULL OR strAudioProfile='' THEN '%s' "
-                             "ELSE strAudioProfile END, strAudioCodec='%s' WHERE strAudioCodec='%s'",
-                             detail.c_str(), canonical, extended));
+      m_pDS->exec("UPDATE streamdetails SET strHdrType=LOWER(strHdrType) WHERE strHdrType IS NOT NULL");
+      m_pDS->exec(
+          "UPDATE streamdetails SET strHdrTypeAlt=LOWER(strHdrTypeAlt) WHERE strHdrTypeAlt IS NOT NULL");
+      m_pDS->exec("UPDATE streamdetails SET strHdrType='hdr10plus' WHERE strHdrType='hdr10+'");
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "{} unable to migrate hdr10+ stream details", __FUNCTION__);
     }
 
-  }
-  catch (...)
-  {
-    CLog::Log(LOGERROR, "{} unable to migrate extended audio codec stream details", __FUNCTION__);
-  }
+    try
+    {
+      static const std::pair<const char*, const char*> codecMigration[] = {
+          {"truehd_atmos", "truehd"},      {"eac3_ddp_atmos", "eac3"},
+          {"dtshd_ma_x", "dtshd_ma"},      {"dtshd_ma_x_imax", "dtshd_ma"},
+          {"dts_es", "dca"},               {"dts_96_24", "dca"},
+          {"dts_express", "dca"},          {"aac_lc", "aac"},
+          {"he_aac", "aac"},               {"he_aac_v2", "aac"},
+          {"aac_ssr", "aac"},              {"aac_ltp", "aac"}};
 
-  try
-  {
-    m_pDS->exec("UPDATE streamdetails SET strHdrTypeAlt='hdr10plus' WHERE strHdrTypeAlt='hdr10+'");
-    m_pDS->exec("UPDATE streamdetails SET strHdrType='dolbyvision', strHdrTypeAlt='hdr10plus' "
-                "WHERE strHdrType='hdr10plus' AND strHdrTypeAlt='dolbyvision'");
-    m_pDS->exec("UPDATE streamdetails SET strHdrType='hdr10', strHdrTypeAlt='hdr10plus' "
-                "WHERE strHdrType='hdr10plus'");
-    m_pDS->exec("UPDATE streamdetails SET strHdrType='', strHdrTypeAlt='hdrvivid' "
-                "WHERE strHdrType='hdrvivid'");
-    m_pDS->exec("UPDATE streamdetails SET strHdrTypeAlt='' "
-                "WHERE COALESCE(strHdrTypeAlt,'')=COALESCE(strHdrType,'')");
+      for (const auto& [extended, canonical] : codecMigration)
+      {
+        const std::string detail = StreamUtils::GetCodecDetail(extended);
+        m_pDS->exec(PrepareSQL("UPDATE streamdetails SET strAudioProfile="
+                               "CASE WHEN strAudioProfile IS NULL OR strAudioProfile='' THEN '%s' "
+                               "ELSE strAudioProfile END, strAudioCodec='%s' WHERE strAudioCodec='%s'",
+                               detail.c_str(), canonical, extended));
+      }
+
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "{} unable to migrate extended audio codec stream details", __FUNCTION__);
+    }
+
+    try
+    {
+      m_pDS->exec("UPDATE streamdetails SET strHdrTypeAlt='hdr10plus' WHERE strHdrTypeAlt='hdr10+'");
+      m_pDS->exec("UPDATE streamdetails SET strHdrType='dolbyvision', strHdrTypeAlt='hdr10plus' "
+                  "WHERE strHdrType='hdr10plus' AND strHdrTypeAlt='dolbyvision'");
+      m_pDS->exec("UPDATE streamdetails SET strHdrType='hdr10', strHdrTypeAlt='hdr10plus' "
+                  "WHERE strHdrType='hdr10plus'");
+      m_pDS->exec("UPDATE streamdetails SET strHdrType='', strHdrTypeAlt='hdrvivid' "
+                  "WHERE strHdrType='hdrvivid'");
+      m_pDS->exec("UPDATE streamdetails SET strHdrTypeAlt='' "
+                  "WHERE COALESCE(strHdrTypeAlt,'')=COALESCE(strHdrType,'')");
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "{} unable to migrate extended hdr stream details", __FUNCTION__);
+    }
+
+    m_pDS->exec("COMMIT");
   }
   catch (...)
   {
-    CLog::Log(LOGERROR, "{} unable to migrate extended hdr stream details", __FUNCTION__);
+    CLog::Log(LOGERROR, "{} transaction failed, rolling back", __FUNCTION__);
+    try
+    {
+      m_pDS->exec("ROLLBACK");
+    }
+    catch (...)
+    {
+    }
   }
 
   s_checkedDatabase = databaseFolder;
