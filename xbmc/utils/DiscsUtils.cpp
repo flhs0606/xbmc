@@ -9,6 +9,14 @@
 #include "DiscsUtils.h"
 
 #include "FileItem.h"
+#include "URL.h"
+#include "filesystem/File.h"
+#include "utils/URIUtils.h"
+
+#include <algorithm>
+#include <array>
+#include <string_view>
+
 //! @todo it's wrong to include videoplayer scoped files, refactor
 // dvd inputstream so they can be used by other components. Or just use libdvdnav directly.
 #include "cores/VideoPlayer/DVDInputStreams/DVDInputStreamNavigator.h"
@@ -65,4 +73,28 @@ UTILS::DISCS::DiscInfo UTILS::DISCS::ProbeBlurayDiscInfo(const std::string& medi
   info.serial = bdDir.GetBlurayID();
 #endif
   return info;
+}
+
+bool UTILS::DISCS::IsBlurayDiscImage(const std::string& path)
+{
+  if (!URIUtils::IsDiscImage(path))
+    return false;
+
+  static constexpr std::array<std::string_view, 4> blurayFiles = {
+      "BDMV/index.bdmv",
+      "BDMV/INDEX.BDM",
+      "index.bdmv",
+      "INDEX.BDM",
+  };
+
+  CURL url("udf://");
+  url.SetHostName(path);
+  const std::string basePath = url.Get();
+
+  return std::any_of(blurayFiles.begin(), blurayFiles.end(),
+                     [&basePath](std::string_view file)
+                     {
+                       return XFILE::CFile::Exists(
+                           URIUtils::AddFileToFolder(basePath, std::string(file)));
+                     });
 }

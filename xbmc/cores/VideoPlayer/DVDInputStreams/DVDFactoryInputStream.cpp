@@ -30,6 +30,7 @@
 #include "filesystem/CurlFile.h"
 #include "filesystem/IFileTypes.h"
 #include "storage/MediaManager.h"
+#include "utils/DiscsUtils.h"
 #include "utils/FileUtils.h"
 #include "utils/URIUtils.h"
 
@@ -74,14 +75,7 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
   if (fileitem.IsDiscImage())
   {
 #ifdef HAVE_LIBBLURAY
-    CURL url("udf://");
-    url.SetHostName(file);
-    url.SetFileName("BDMV/index.bdmv");
-    if (CFileUtils::Exists(url.Get()))
-      return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
-    url.SetHostName(file);
-    url.SetFileName("BDMV/INDEX.BDM");
-    if (CFileUtils::Exists(url.Get()))
+    if (UTILS::DISCS::IsBlurayDiscImage(file))
       return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
 #endif
 

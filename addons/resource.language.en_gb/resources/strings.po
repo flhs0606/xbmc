@@ -16790,7 +16790,14 @@ msgctxt "#25014"
 msgid "Manual"
 msgstr ""
 
-#empty strings from id 25015 to 25018
+#empty strings from id 25015 to 25017
+
+#. Automatic menu
+#. Simple menu is shown only if playlist not identified automatically
+#: system/settings/settings.xml
+msgctxt "#25018"
+msgid "Automatic menu selection"
+msgstr ""
 
 #. Unit for audio bitrate, kilobits per second
 #: xbmc/guilib/guiinfo/PlayerGUIInfo.cpp

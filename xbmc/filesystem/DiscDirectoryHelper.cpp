@@ -10,6 +10,7 @@
 #include "FileItem.h"
 #include "ServiceBroker.h"
 #include "URL.h"
+#include "dialogs/GUIDialogSimpleMenu.h"
 #include "guilib/LocalizeStrings.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
@@ -660,4 +661,71 @@ void CDiscDirectoryHelper::AddRootOptions(const CURL& url,
     item->SetArt("icon", "DefaultProgram.png");
     items.Add(item);
   }
+}
+
+bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(CFileItem& item, MenuDecision playback)
+{
+  const bool silent{playback == MenuDecision::SILENT};
+  const std::string originalDynPath{item.GetDynPath()};
+
+  if (playback == MenuDecision::SHOW_SIMPLE_MENU)
+  {
+    const std::string titlesDir{URIUtils::GetBlurayTitlesPath(originalDynPath)};
+    if (titlesDir.empty())
+    {
+      CLog::LogF(LOGERROR, "Unable to derive a bluray titles path from {}",
+                 CURL::GetRedacted(originalDynPath));
+      return false;
+    }
+    return CGUIDialogSimpleMenu::ShowPlaySelection(item, titlesDir);
+  }
+
+  // GET_MAIN_TITLE or SILENT: fetch single main title from virtual directory without dialog
+  const std::string mainDir{URIUtils::GetBlurayMainTitlePath(originalDynPath)};
+  if (mainDir.empty())
+  {
+    CLog::LogF(LOGERROR, "Unable to derive a bluray main title path from {}",
+               CURL::GetRedacted(originalDynPath));
+    return false;
+  }
+
+  CFileItemList sourceItems;
+  CDirectory::CHints hints;
+  if (!CDirectory::GetDirectory(mainDir, sourceItems, hints) || sourceItems.IsEmpty())
+  {
+    CLog::LogF(LOGERROR, "Failed to get main movie playlist for {}", CURL::GetRedacted(mainDir));
+    if (silent)
+      return false;
+
+    // Fallback to simple menu dialog
+    return CGUIDialogSimpleMenu::ShowPlaySelection(item,
+                                                   URIUtils::GetBlurayTitlesPath(originalDynPath));
+  }
+
+  const std::shared_ptr<CFileItem>& selectedItem{sourceItems[0]};
+  if (!selectedItem)
+    return false;
+
+  item.SetDynPath(selectedItem->GetDynPath());
+  item.SetProperty("get_stream_details_from_player", true);
+  item.SetProperty("original_listitem_url", originalDynPath);
+
+  const CVariant& playlistProp{selectedItem->GetProperty("bluray_playlist")};
+  if (!playlistProp.isNull())
+  {
+    CLog::LogF(LOGINFO, "Automatically selected main playlist {} for {}",
+               playlistProp.asInteger32(0), CURL::GetRedacted(originalDynPath));
+    item.SetProperty("bluray_playlist", playlistProp);
+  }
+
+  if (selectedItem->HasVideoInfoTag())
+  {
+    if (const auto selectedTag = selectedItem->GetVideoInfoTag(); selectedTag->GetDuration() > 0)
+    {
+      if (auto tag = item.GetVideoInfoTag())
+        tag->SetDuration(selectedTag->GetDuration());
+    }
+  }
+
+  return true;
 }

@@ -1334,6 +1334,18 @@ std::string URIUtils::GetBlurayMainTitlePath(const std::string& path, GetAllTitl
   return newPath;
 }
 
+std::string URIUtils::GetBlurayMenuPath(const std::string& path)
+{
+  if (IsContainerPath(path))
+    return {};
+
+  const std::string blurayPath{GetBlurayPath(path)};
+  if (blurayPath.empty())
+    return {};
+
+  return AddFileToFolder(blurayPath, "menu");
+}
+
 std::string URIUtils::GetBlurayPlaylistPath(const std::string& path, int playlist /* = -1 */)
 {
   if (IsContainerPath(path))

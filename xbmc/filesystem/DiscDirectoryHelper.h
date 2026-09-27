@@ -64,6 +64,15 @@ constexpr bool operator&(AddMenuAndAllTitlesOptions lhs, AddMenuAndAllTitlesOpti
   return (static_cast<uint8_t>(lhs) & static_cast<uint8_t>(rhs)) != 0;
 }
 
+enum class MenuDecision : uint8_t
+{
+  NO_ACTION,
+  SILENT,
+  SHOW_SIMPLE_MENU,
+  SHOW_DISC_MENU,
+  GET_MAIN_TITLE
+};
+
 enum class ENCODING_TYPE : uint8_t
 {
   // Video
@@ -204,6 +213,14 @@ public:
                              CFileItemList& items,
                              AllTitles allTitlesType,
                              AddMenuAndAllTitlesOptions addMenuAndAllTitlesOptions);
+
+  /*!
+   * \brief Either shows simple menu to select playlist, chooses main feature (movie/episode) playlists or returns if disc menu will be used later.
+   * \param item FileItem containing details of desired movie. This is updated with the selected playlist.
+   * \param playback Determines if the simple dialog should be shown or the main title selected.
+   * \return true if a playlist was selected or if the disc menu will be used later, false if the user cancelled.
+   */
+  static bool GetOrShowPlaylistSelection(CFileItem& item, MenuDecision playback);
 
 private:
   void Reset();

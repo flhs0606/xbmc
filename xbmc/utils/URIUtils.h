@@ -243,6 +243,10 @@ public:
    */
   static std::string GetBlurayPlaylistPath(const std::string& path, int playlist = -1);
 
+  /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to menu.
+   */
+  static std::string GetBlurayMenuPath(const std::string& path);
+
   /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the root bluray path (bluray://...).
    */
   static std::string GetBlurayPath(const std::string& path);

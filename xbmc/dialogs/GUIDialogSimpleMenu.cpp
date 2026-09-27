@@ -48,43 +48,6 @@ protected:
 };
 }
 
-
-bool CGUIDialogSimpleMenu::ShowPlaySelection(CFileItem& item)
-{
-  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_DISC_PLAYBACK) != BD_PLAYBACK_SIMPLE_MENU)
-    return true;
-
-  if (item.IsBDFile())
-  {
-    std::string root = URIUtils::GetParentPath(item.GetDynPath());
-    URIUtils::RemoveSlashAtEnd(root);
-    if (URIUtils::GetFileName(root) == "BDMV")
-    {
-      CURL url("bluray://");
-      url.SetHostName(URIUtils::GetParentPath(root));
-      url.SetFileName("root");
-      return ShowPlaySelection(item, url.Get());
-    }
-  }
-
-  if (item.IsDiscImage())
-  {
-    CURL url2("udf://");
-    url2.SetHostName(item.GetDynPath());
-    url2.SetFileName("BDMV/index.bdmv");
-    if (CFileUtils::Exists(url2.Get()))
-    {
-      url2.SetFileName("");
-
-      CURL url("bluray://");
-      url.SetHostName(url2.Get());
-      url.SetFileName("root");
-      return ShowPlaySelection(item, url.Get());
-    }
-  }
-  return true;
-}
-
 bool CGUIDialogSimpleMenu::ShowPlaySelection(CFileItem& item, const std::string& directory)
 {
 
