@@ -68,6 +68,7 @@ enum class MenuDecision : uint8_t
 {
   NO_ACTION,
   SILENT,
+  AUTO,
   SHOW_SIMPLE_MENU,
   SHOW_DISC_MENU,
   GET_MAIN_TITLE

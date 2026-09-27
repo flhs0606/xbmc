@@ -680,6 +680,65 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(CFileItem& item, MenuDecis
     return CGUIDialogSimpleMenu::ShowPlaySelection(item, titlesDir);
   }
 
+  if (playback == MenuDecision::AUTO)
+  {
+    const std::string titlesDir{URIUtils::GetBlurayTitlesPath(originalDynPath)};
+    if (titlesDir.empty())
+    {
+      CLog::LogF(LOGERROR, "Unable to derive a bluray titles path from {}",
+                 CURL::GetRedacted(originalDynPath));
+      return false;
+    }
+
+    CFileItemList sourceItems;
+    CDirectory::CHints hints;
+    if (CDirectory::GetDirectory(titlesDir, sourceItems, hints) && !sourceItems.IsEmpty())
+    {
+      std::vector<std::shared_ptr<CFileItem>> movieTitles;
+      for (const auto& it : sourceItems)
+      {
+        if (!it->m_bIsFolder && URIUtils::GetFileName(it->GetPath()) != "menu")
+          movieTitles.push_back(it);
+      }
+
+      // If there are multiple distinct editions/cuts on disc, prompt user via simple menu
+      if (movieTitles.size() > 1)
+      {
+        CLog::LogF(LOGINFO, "AUTO mode: disc has {} editions, prompting user via simple menu for {}",
+                   movieTitles.size(), CURL::GetRedacted(originalDynPath));
+        return CGUIDialogSimpleMenu::ShowPlaySelection(item, titlesDir);
+      }
+      else if (movieTitles.size() == 1)
+      {
+        const auto& selectedItem = movieTitles[0];
+        CLog::LogF(LOGINFO, "AUTO mode: uniquely identified main playlist {} for {}, playing automatically",
+                   selectedItem->GetProperty("bluray_playlist").asInteger32(0),
+                   CURL::GetRedacted(originalDynPath));
+
+        item.SetDynPath(selectedItem->GetDynPath());
+        item.SetProperty("get_stream_details_from_player", true);
+        item.SetProperty("original_listitem_url", originalDynPath);
+
+        const CVariant& playlistProp{selectedItem->GetProperty("bluray_playlist")};
+        if (!playlistProp.isNull())
+          item.SetProperty("bluray_playlist", playlistProp);
+
+        if (selectedItem->HasVideoInfoTag())
+        {
+          if (const auto selectedTag = selectedItem->GetVideoInfoTag(); selectedTag->GetDuration() > 0)
+          {
+            if (auto tag = item.GetVideoInfoTag())
+              tag->SetDuration(selectedTag->GetDuration());
+          }
+        }
+        return true;
+      }
+    }
+
+    // Fallback: prompt via simple menu dialog
+    return CGUIDialogSimpleMenu::ShowPlaySelection(item, titlesDir);
+  }
+
   // GET_MAIN_TITLE or SILENT: fetch single main title from virtual directory without dialog
   const std::string mainDir{URIUtils::GetBlurayMainTitlePath(originalDynPath)};
   if (mainDir.empty())

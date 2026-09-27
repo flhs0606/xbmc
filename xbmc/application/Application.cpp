@@ -2561,7 +2561,10 @@ XFILE::MenuDecision GetMenuDecisions(const CFileItem& item, const CPlayerOptions
     if (playbackSetting == BD_PLAYBACK_MAIN_TITLE)
       return MenuDecision::GET_MAIN_TITLE;
 
-    // For bare Blu-ray discs (ISO or BDMV), show the simple menu for AUTO and SIMPLE_MENU
+    if (playbackSetting == BD_PLAYBACK_AUTO && isBluray)
+      return MenuDecision::AUTO;
+
+    // For bare Blu-ray discs (ISO or BDMV), show the simple menu for SIMPLE_MENU
     if (isBluray)
       return MenuDecision::SHOW_SIMPLE_MENU;
 
@@ -2585,6 +2588,7 @@ bool GetPlaylistIfDisc(CFileItem& item, CPlayerOptions& options)
       break;
     }
     case MenuDecision::SHOW_SIMPLE_MENU:
+    case MenuDecision::AUTO:
     case MenuDecision::GET_MAIN_TITLE:
     case MenuDecision::SILENT:
     {
