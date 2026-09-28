@@ -460,14 +460,16 @@ bool CDVDInputStreamBluray::Open()
     root = url.GetHostName();
     filename = URIUtils::GetFileName(url.GetFileName());
 
-    // Remove udf:// if present before probing disc properties
+    // Disc images mounted via udf:// must always use files mode (bd_open_files),
+    // as bd_open_disc only supports local physical drive devices and cannot handle udf:// URLs.
+    // Furthermore, probing IsProtectedBlurayDisc on a stripped ISO path triggers false-positive
+    // HTTP 200 responses from streaming proxies (such as emby-next-gen).
     CURL url2(root);
-    CFileItem item(url2, false);
-    if (url2.IsProtocol("udf"))
-      item.SetPath(url2.GetHostName());
-
-    // Check whether disc is AACS protected (single probe on normalized path)
-    openDisc = item.IsProtectedBlurayDisc();
+    if (!url2.IsProtocol("udf") && !URIUtils::IsRemote(root))
+    {
+      CFileItem item(url2, false);
+      openDisc = item.IsProtectedBlurayDisc();
+    }
 
     // check for a menu call for an image file
     if (StringUtils::EqualsNoCase(filename, "menu"))
@@ -490,7 +492,7 @@ bool CDVDInputStreamBluray::Open()
     url2.SetHostName(m_item.GetDynPath());
     root = url2.Get();
   }
-  else if (m_item.IsProtectedBlurayDisc())
+  else if (!URIUtils::IsRemote(m_item.GetDynPath()) && m_item.IsProtectedBlurayDisc())
   {
     openDisc = true;
   }
