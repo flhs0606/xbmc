@@ -670,7 +670,8 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(CFileItem& item, MenuDecis
 
   if (playback == MenuDecision::SHOW_SIMPLE_MENU)
   {
-    const std::string titlesDir{URIUtils::GetBlurayTitlesPath(originalDynPath)};
+    const std::string titlesDir{
+        URIUtils::GetBlurayTitlesPath(originalDynPath, item.IsDiscImage())};
     if (titlesDir.empty())
     {
       CLog::LogF(LOGERROR, "Unable to derive a bluray titles path from {}",
@@ -682,7 +683,8 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(CFileItem& item, MenuDecis
 
   if (playback == MenuDecision::AUTO)
   {
-    const std::string titlesDir{URIUtils::GetBlurayTitlesPath(originalDynPath)};
+    const std::string titlesDir{
+        URIUtils::GetBlurayTitlesPath(originalDynPath, item.IsDiscImage())};
     if (titlesDir.empty())
     {
       CLog::LogF(LOGERROR, "Unable to derive a bluray titles path from {}",
@@ -740,7 +742,8 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(CFileItem& item, MenuDecis
   }
 
   // GET_MAIN_TITLE or SILENT: fetch single main title from virtual directory without dialog
-  const std::string mainDir{URIUtils::GetBlurayMainTitlePath(originalDynPath)};
+  const std::string mainDir{
+      URIUtils::GetBlurayMainTitlePath(originalDynPath, item.IsDiscImage())};
   if (mainDir.empty())
   {
     CLog::LogF(LOGERROR, "Unable to derive a bluray main title path from {}",

@@ -178,7 +178,7 @@ public:
 
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate) const;
   BLURAY_TITLE_INFO* GetMainTitle() const;
-  BLURAY_TITLE_INFO* GetTitleLongest() const;
+  BLURAY_TITLE_INFO* GetTitleLongest(int titles = -1) const;
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name) const;
 
   void ProcessEvent();

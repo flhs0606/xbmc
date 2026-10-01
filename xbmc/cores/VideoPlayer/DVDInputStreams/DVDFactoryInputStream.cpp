@@ -104,7 +104,7 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
 #ifdef HAVE_LIBBLURAY
   else if (fileitem.IsType(".bdmv") || fileitem.IsType(".mpls")
           || fileitem.IsType(".bdm") || fileitem.IsType(".mpl")
-          || StringUtils::StartsWithNoCase(file, "bluray:"))
+          || URIUtils::IsBlurayPath(file) || URIUtils::IsBlurayPath(fileitem.GetPath()))
     return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
 #endif
   else if (StringUtils::StartsWithNoCase(file, "rtp://") ||

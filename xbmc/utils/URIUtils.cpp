@@ -1275,7 +1275,7 @@ std::string URIUtils::GetDiscUnderlyingFile(const CURL& url)
   return AddFileToFolder(host, filename);
 }
 
-std::string URIUtils::GetBlurayPath(const std::string& path)
+std::string URIUtils::GetBlurayPath(const std::string& path, bool isDiscImage)
 {
   if (IsContainerPath(path))
     return {};
@@ -1289,7 +1289,7 @@ std::string URIUtils::GetBlurayPath(const std::string& path)
   }
 
   std::string newPath{};
-  if (IsDiscImage(path))
+  if (isDiscImage || IsDiscImage(path))
   {
     CURL url("udf://");
     url.SetHostName(path);
@@ -1310,12 +1310,13 @@ std::string URIUtils::GetBlurayPath(const std::string& path)
 
 std::string URIUtils::GetBlurayTitlesPath(const std::string& path,
                                           GetAllTitles getAllTitles,
-                                          AllTitlesOptions options)
+                                          AllTitlesOptions options,
+                                          bool isDiscImage)
 {
   if (IsContainerPath(path))
     return {};
 
-  std::string newPath{AddFileToFolder(GetBlurayPath(path), "root", "titles")};
+  std::string newPath{AddFileToFolder(GetBlurayPath(path, isDiscImage), "root", "titles")};
   if (options == AllTitlesOptions::EPISODES)
     newPath = AddFileToFolder(newPath, "episodes");
   if (getAllTitles == GetAllTitles::ALL)
@@ -1323,23 +1324,25 @@ std::string URIUtils::GetBlurayTitlesPath(const std::string& path,
   return newPath;
 }
 
-std::string URIUtils::GetBlurayMainTitlePath(const std::string& path, GetAllTitles getAllTitles)
+std::string URIUtils::GetBlurayMainTitlePath(const std::string& path,
+                                             GetAllTitles getAllTitles,
+                                             bool isDiscImage)
 {
   if (IsContainerPath(path))
     return {};
 
-  std::string newPath{AddFileToFolder(GetBlurayPath(path), "root", "main")};
+  std::string newPath{AddFileToFolder(GetBlurayPath(path, isDiscImage), "root", "main")};
   if (getAllTitles == GetAllTitles::ALL)
     newPath = AddFileToFolder(newPath, "all");
   return newPath;
 }
 
-std::string URIUtils::GetBlurayMenuPath(const std::string& path)
+std::string URIUtils::GetBlurayMenuPath(const std::string& path, bool isDiscImage)
 {
   if (IsContainerPath(path))
     return {};
 
-  const std::string blurayPath{GetBlurayPath(path)};
+  const std::string blurayPath{GetBlurayPath(path, isDiscImage)};
   if (blurayPath.empty())
     return {};
 

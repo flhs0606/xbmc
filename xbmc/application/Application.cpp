@@ -2536,60 +2536,31 @@ namespace
 {
 void DetectHttpDiscImageForPlayback(CFileItem& item)
 {
-  if (item.HasProperty("httpurl.disc_image"))
+  if (item.HasProperty("httpurl.disc_image") || !item.IsInternetStream(true))
     return;
 
-  const std::string path = item.GetDynPath();
-  if (!URIUtils::IsInternetStream(path, true /* strict http/https */))
+  // Fast skip: already a disc image, or PVR / live streams / disabled lookup
+  if (item.IsDiscImage() || item.IsPVR() || item.IsLiveTV() || !item.ContentLookup())
     return;
 
-  // Fast confirm: already has disc image extension
-  if (URIUtils::IsDiscImage(path))
-  {
-    item.SetProperty("httpurl.disc_image", true);
-    return;
-  }
-
-  // Fast skip: clearly a normal video container
-  if (URIUtils::HasExtension(path, ".mkv|.mp4|.avi|.mov|.mpg|.mpeg|.m2ts|.ts|.tp|.flv|.wmv|.webm|.asf|.m4v"))
+  // Fast skip: clearly a normal video container by standard video extensions
+  if (URIUtils::HasExtension(item.GetDynPath(),
+                             CServiceBroker::GetFileExtensionProvider().GetVideoExtensions()))
     return;
 
-  // Skip PVR, live streams, or streams that explicitly disable content lookup
-  if (item.IsPVR() || item.IsLiveTV() || !item.ContentLookup())
-    return;
-
-  // Probe redirects using CCurlFile
+  // Probe redirects using CCurlFile with a short connect timeout
   try
   {
     XFILE::CCurlFile curlFile;
+    curlFile.SetTimeout(5);
     CURL url(item.GetDynURL());
     if (curlFile.Open(url))
     {
       const std::string effectiveUrl = curlFile.GetURL();
-      bool isDisc = URIUtils::IsDiscImage(effectiveUrl);
-
-      if (!isDisc)
-      {
-        const auto& headers = curlFile.GetHttpHeader();
-        const std::string mime = headers.GetMimeType();
-        if (mime == "application/x-iso9660-image" || mime == "application/x-cd-image")
-        {
-          isDisc = true;
-        }
-        else
-        {
-          const auto locations = headers.GetValues("location");
-          for (const auto& loc : locations)
-          {
-            if (URIUtils::IsDiscImage(loc))
-            {
-              isDisc = true;
-              break;
-            }
-          }
-        }
-      }
-
+      const std::string mime = curlFile.GetHttpHeader().GetMimeType();
+      const bool isDisc = URIUtils::IsDiscImage(effectiveUrl) ||
+                          mime == "application/x-iso9660-image" ||
+                          mime == "application/x-cd-image";
       if (isDisc)
       {
         CLog::LogF(LOGINFO, "HTTP ISO pre-detection: identified disc image via redirect to {}",
@@ -2659,7 +2630,7 @@ bool GetPlaylistIfDisc(CFileItem& item, CPlayerOptions& options)
   {
     case MenuDecision::SHOW_DISC_MENU:
     {
-      item.SetDynPath(URIUtils::GetBlurayMenuPath(item.GetDynPath()));
+      item.SetDynPath(URIUtils::GetBlurayMenuPath(item.GetDynPath(), item.IsDiscImage()));
       break;
     }
     case MenuDecision::SHOW_SIMPLE_MENU:

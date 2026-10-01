@@ -327,12 +327,13 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetMainTitle() const
 
   logComponentM(LOGDEBUG, LOGBLURAY,
                 "CDVDInputStreamBluray::GetMainTitle - bd_get_main_title unavailable, falling back to GetTitleLongest");
-  return GetTitleLongest();
+  return GetTitleLongest(titles);
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest() const
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest(int titles) const
 {
-  int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
+  if (titles < 0)
+    titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
   
   BLURAY_TITLE_INFO* s = nullptr;
   for (int i = 0; i < titles; i++)

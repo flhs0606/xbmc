@@ -101,5 +101,12 @@ bool UTILS::DISCS::IsBlurayDiscImage(const std::string& path, bool isKnownDiscIm
 
 bool UTILS::DISCS::IsBlurayDiscImage(const CFileItem& item)
 {
-  return IsBlurayDiscImage(item.GetDynPath(), item.IsDiscImage());
+  std::string path = item.GetDynPath();
+  const bool isKnownDisc = item.HasProperty("httpurl.disc_image")
+                               ? item.GetProperty("httpurl.disc_image").asBoolean(false)
+                               : item.IsDiscImage();
+  if (URIUtils::IsBlurayPath(path) && item.HasProperty("original_listitem_url"))
+    path = item.GetProperty("original_listitem_url").asString();
+
+  return IsBlurayDiscImage(path, isKnownDisc || URIUtils::IsDiscImage(path));
 }

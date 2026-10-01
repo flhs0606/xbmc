@@ -1193,6 +1193,10 @@ bool CFileItem::IsVideoExtras() const
 
 bool CFileItem::IsDiscImage() const
 {
+  // A bluray:// virtual path or playlist represents an unpacked stream, not a raw disc image
+  if (URIUtils::IsBlurayPath(GetDynPath()) || IsType(".mpls") || IsType(".bdmv"))
+    return false;
+
   if (HasProperty("httpurl.disc_image"))
     return GetProperty("httpurl.disc_image").asBoolean(false);
 

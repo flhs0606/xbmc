@@ -232,12 +232,22 @@ public:
    */
   static std::string GetBlurayTitlesPath(const std::string& path,
                                          GetAllTitles getAllTitles = GetAllTitles::LONG,
-                                         AllTitlesOptions options = AllTitlesOptions::MOVIES);
+                                         AllTitlesOptions options = AllTitlesOptions::MOVIES,
+                                         bool isDiscImage = false);
+  static std::string GetBlurayTitlesPath(const std::string& path, bool isDiscImage)
+  {
+    return GetBlurayTitlesPath(path, GetAllTitles::LONG, AllTitlesOptions::MOVIES, isDiscImage);
+  }
 
   /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to main title.
    */
   static std::string GetBlurayMainTitlePath(const std::string& path,
-                                            GetAllTitles getAllTitles = GetAllTitles::LONG);
+                                            GetAllTitles getAllTitles = GetAllTitles::LONG,
+                                            bool isDiscImage = false);
+  static std::string GetBlurayMainTitlePath(const std::string& path, bool isDiscImage)
+  {
+    return GetBlurayMainTitlePath(path, GetAllTitles::LONG, isDiscImage);
+  }
 
   /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to default playlist path.
    */
@@ -245,11 +255,11 @@ public:
 
   /*! \brief Given a path to an .ISO or index.BDMV, returns a bluray:// path to menu.
    */
-  static std::string GetBlurayMenuPath(const std::string& path);
+  static std::string GetBlurayMenuPath(const std::string& path, bool isDiscImage = false);
 
   /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the root bluray path (bluray://...).
    */
-  static std::string GetBlurayPath(const std::string& path);
+  static std::string GetBlurayPath(const std::string& path, bool isDiscImage = false);
 
   /*! \brief Given a path to bluray playlist (bluray://.../xxxxx.mpls), returns the playlist number.
    */
