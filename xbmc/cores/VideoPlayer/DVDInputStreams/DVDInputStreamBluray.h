@@ -177,6 +177,7 @@ public:
 #endif
 
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate) const;
+  BLURAY_TITLE_INFO* GetMainTitle() const;
   BLURAY_TITLE_INFO* GetTitleLongest() const;
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name) const;
 
@@ -297,7 +298,6 @@ protected:
   uint32_t m_vmDiagPlaneMax = 0;
   std::chrono::steady_clock::time_point m_vmDiagPlaylistEnter{};
   int m_vmDiagPlaylist = -1;
-  int                 m_nTitles = -1;
   std::string         m_root;
 
   // MVC related members

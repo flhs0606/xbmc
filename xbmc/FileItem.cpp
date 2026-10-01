@@ -1193,6 +1193,9 @@ bool CFileItem::IsVideoExtras() const
 
 bool CFileItem::IsDiscImage() const
 {
+  if (HasProperty("httpurl.disc_image"))
+    return GetProperty("httpurl.disc_image").asBoolean(false);
+
   return URIUtils::IsDiscImage(GetDynPath());
 }
 

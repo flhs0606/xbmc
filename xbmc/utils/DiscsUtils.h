@@ -10,6 +10,8 @@
 
 #include <string>
 
+class CFileItem;
+
 namespace UTILS
 {
 namespace DISCS
@@ -71,9 +73,16 @@ DiscInfo ProbeBlurayDiscInfo(const std::string& mediaPath);
 
 /*! \brief Probe a path to see if it is a bluray disc image
     \param path The path to probe
+    \param isKnownDiscImage If true, bypass extension verification
     \return true if the path is a bluray disc image, false otherwise
 */
-bool IsBlurayDiscImage(const std::string& path);
+bool IsBlurayDiscImage(const std::string& path, bool isKnownDiscImage = false);
+
+/*! \brief Probe a file item to see if it is a bluray disc image
+    \param item The item to probe (checks both extension and disc_image properties)
+    \return true if the item is a bluray disc image, false otherwise
+*/
+bool IsBlurayDiscImage(const CFileItem& item);
 
 } // namespace DISCS
 } // namespace UTILS

@@ -303,6 +303,33 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& x
   return bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
 }
 
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetMainTitle() const
+{
+  int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
+  if (titles <= 0)
+    return nullptr;
+
+  // Prefer libbluray's native heuristic algorithm:
+  // Evaluates chapter count, HD audio properties (TrueHD/Atmos/DTS-HD MA), video properties,
+  // and filters out ScreenPass fake playlist traps.
+  int mainTitleIdx = bd_get_main_title(m_bd);
+  if (mainTitleIdx >= 0 && mainTitleIdx < titles)
+  {
+    BLURAY_TITLE_INFO* info = bd_get_title_info(m_bd, mainTitleIdx, 0);
+    if (info)
+    {
+      logComponentM(LOGDEBUG, LOGBLURAY,
+                    "CDVDInputStreamBluray::GetMainTitle - selected main title {} (idx {}) via bd_get_main_title",
+                    info->playlist, mainTitleIdx);
+      return info;
+    }
+  }
+
+  logComponentM(LOGDEBUG, LOGBLURAY,
+                "CDVDInputStreamBluray::GetMainTitle - bd_get_main_title unavailable, falling back to GetTitleLongest");
+  return GetTitleLongest();
+}
+
 BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest() const
 {
   int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
@@ -634,7 +661,6 @@ bool CDVDInputStreamBluray::Open()
     return false;
   }
 
-  m_nTitles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
   int mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_DISC_PLAYBACK);
 
   if (URIUtils::HasExtension(filename, ".mpls"))
@@ -642,15 +668,15 @@ bool CDVDInputStreamBluray::Open()
     m_navmode = false;
     ReplaceTitleInfo(GetTitleFile(filename));
   }
-  else if (mode == BD_PLAYBACK_MAIN_TITLE)
-  {
-    m_navmode = false;
-    ReplaceTitleInfo(GetTitleLongest());
-  }
   else if (resumable && m_item.GetStartOffset() == STARTOFFSET_RESUME && m_item.IsResumable())
   {
     m_navmode = false;
     ReplaceTitleInfo(GetTitleFromState(m_item.GetVideoInfoTag()->GetResumePoint().playerState));
+  }
+  else if (mode == BD_PLAYBACK_MAIN_TITLE)
+  {
+    m_navmode = false;
+    ReplaceTitleInfo(GetMainTitle());
   }
   else
   {
@@ -666,7 +692,7 @@ bool CDVDInputStreamBluray::Open()
     }
 
     if(!m_navmode)
-      ReplaceTitleInfo(GetTitleLongest());
+      ReplaceTitleInfo(GetMainTitle());
   }
 
   UpdateGraphicsRegime();

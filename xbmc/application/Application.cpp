@@ -26,6 +26,7 @@
 #include "ServiceManager.h"
 #include "TextureCache.h"
 #include "filesystem/BlurayDiscCache.h"
+#include "filesystem/CurlFile.h"
 #include "filesystem/DiscDirectoryHelper.h"
 #include "settings/DiscSettings.h"
 #include "utils/DiscsUtils.h"
@@ -2533,13 +2534,84 @@ bool CApplication::PlayStack(CFileItem& item, bool bRestart)
 
 namespace
 {
+void DetectHttpDiscImageForPlayback(CFileItem& item)
+{
+  if (item.HasProperty("httpurl.disc_image"))
+    return;
+
+  const std::string path = item.GetDynPath();
+  if (!URIUtils::IsInternetStream(path, true /* strict http/https */))
+    return;
+
+  // Fast confirm: already has disc image extension
+  if (URIUtils::IsDiscImage(path))
+  {
+    item.SetProperty("httpurl.disc_image", true);
+    return;
+  }
+
+  // Fast skip: clearly a normal video container
+  if (URIUtils::HasExtension(path, ".mkv|.mp4|.avi|.mov|.mpg|.mpeg|.m2ts|.ts|.tp|.flv|.wmv|.webm|.asf|.m4v"))
+    return;
+
+  // Skip PVR, live streams, or streams that explicitly disable content lookup
+  if (item.IsPVR() || item.IsLiveTV() || !item.ContentLookup())
+    return;
+
+  // Probe redirects using CCurlFile
+  try
+  {
+    XFILE::CCurlFile curlFile;
+    CURL url(item.GetDynURL());
+    if (curlFile.Open(url))
+    {
+      const std::string effectiveUrl = curlFile.GetURL();
+      bool isDisc = URIUtils::IsDiscImage(effectiveUrl);
+
+      if (!isDisc)
+      {
+        const auto& headers = curlFile.GetHttpHeader();
+        const std::string mime = headers.GetMimeType();
+        if (mime == "application/x-iso9660-image" || mime == "application/x-cd-image")
+        {
+          isDisc = true;
+        }
+        else
+        {
+          const auto locations = headers.GetValues("location");
+          for (const auto& loc : locations)
+          {
+            if (URIUtils::IsDiscImage(loc))
+            {
+              isDisc = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (isDisc)
+      {
+        CLog::LogF(LOGINFO, "HTTP ISO pre-detection: identified disc image via redirect to {}",
+                   CURL::GetRedacted(effectiveUrl));
+        item.SetProperty("httpurl.disc_image", true);
+      }
+      curlFile.Close();
+    }
+  }
+  catch (...)
+  {
+    // Ignore network probe failures; playback will proceed through standard path
+  }
+}
+
 XFILE::MenuDecision GetMenuDecisions(const CFileItem& item, const CPlayerOptions& options)
 {
   using XFILE::MenuDecision;
 
   // Evaluate cheap in-memory path checks first to avoid unnecessary disk/network I/O
   const bool isBlurayPath{URIUtils::IsBlurayPath(item.GetDynPath())};
-  const bool isBluray{!isBlurayPath && (item.IsBDFile() || ::UTILS::DISCS::IsBlurayDiscImage(item.GetDynPath()))};
+  const bool isBluray{!isBlurayPath && (item.IsBDFile() || ::UTILS::DISCS::IsBlurayDiscImage(item))};
 
   if (!isBluray && !isBlurayPath)
     return MenuDecision::NO_ACTION;
@@ -2558,8 +2630,11 @@ XFILE::MenuDecision GetMenuDecisions(const CFileItem& item, const CPlayerOptions
     if (playbackSetting == BD_PLAYBACK_DISC_MENU)
       return MenuDecision::SHOW_DISC_MENU;
 
-    if (playbackSetting == BD_PLAYBACK_MAIN_TITLE)
-      return MenuDecision::GET_MAIN_TITLE;
+    // Direct to player without application-layer MPLS enumeration:
+    // When "Play main title" is chosen, skip CDiscDirectoryHelper/CBlurayDirectory directory parsing.
+    // CDVDInputStreamBluray directly opens the disc and selects the main title via libbluray.
+    if (playbackSetting == BD_PLAYBACK_MAIN_TITLE && !forceSelectionAlways)
+      return MenuDecision::NO_ACTION;
 
     if (playbackSetting == BD_PLAYBACK_AUTO && isBluray)
       return MenuDecision::AUTO;
@@ -2643,6 +2718,9 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
   {
     return false;
   }
+
+  // Pre-detect disc image for HTTP/HTTPS streams without extension or behind 302 redirects
+  DetectHttpDiscImageForPlayback(item);
 
   // if we have a stacked set of files, we need to setup our stack routines for
   // "seamless" seeking and total time of the movie etc.

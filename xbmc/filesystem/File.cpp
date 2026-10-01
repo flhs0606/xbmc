@@ -285,20 +285,8 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
     {
       const std::string pathToUrl(url.Get());
 
-      // A disc image is read through the UDF layer, whose access pattern is scattered rather than
-      // sequential - the volume mount alone is a few dozen small reads - so unlike a stream it
-      // cannot rely on the read-ahead a sequential source gets. It is therefore cached whatever
-      // the buffer mode says, keeping NONE as the way to turn caching off altogether. A local
-      // image is left to the OS page cache, and only the image file itself is cached, never a
-      // composite path wrapping one: IsDiscImage matches on the extension alone, so it is also
-      // true of bluray://udf://host/x.iso, which already has the UDF layer's cache above it.
-      const bool isRemoteDiscImage{!URIUtils::IsBlurayPath(pathToUrl) &&
-                                   !URIUtils::IsProtocol(pathToUrl, "udf") &&
-                                   URIUtils::IsDiscImage(pathToUrl) &&
-                                   !URIUtils::IsHD(pathToUrl)};
-
       if (URIUtils::IsDVD(pathToUrl) || URIUtils::IsBluray(pathToUrl) ||
-          (m_flags & READ_AUDIO_VIDEO) || isRemoteDiscImage)
+          (m_flags & READ_AUDIO_VIDEO))
       {
         const auto settingsComponent = CServiceBroker::GetSettingsComponent();
         const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
@@ -307,19 +295,14 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
             (settings) ? settings->GetInt(CSettings::SETTING_FILECACHE_BUFFERMODE)
                        : CACHE_BUFFER_MODE_NETWORK;
 
-        if (isRemoteDiscImage)
-        {
-          if (cacheBufferMode != CACHE_BUFFER_MODE_NONE)
-            m_flags |= READ_CACHED;
-        }
-        else if ((cacheBufferMode == CACHE_BUFFER_MODE_INTERNET &&
-                  URIUtils::IsInternetStream(pathToUrl, true)) ||
-                 (cacheBufferMode == CACHE_BUFFER_MODE_TRUE_INTERNET &&
-                  URIUtils::IsInternetStream(pathToUrl, false)) ||
-                 (cacheBufferMode == CACHE_BUFFER_MODE_NETWORK &&
-                  URIUtils::IsNetworkFilesystem(pathToUrl)) ||
-                 (cacheBufferMode == CACHE_BUFFER_MODE_ALL &&
-                  (URIUtils::IsNetworkFilesystem(pathToUrl) || URIUtils::IsHD(pathToUrl))))
+        if ((cacheBufferMode == CACHE_BUFFER_MODE_INTERNET &&
+             URIUtils::IsInternetStream(pathToUrl, true)) ||
+            (cacheBufferMode == CACHE_BUFFER_MODE_TRUE_INTERNET &&
+             URIUtils::IsInternetStream(pathToUrl, false)) ||
+            (cacheBufferMode == CACHE_BUFFER_MODE_NETWORK &&
+             URIUtils::IsNetworkFilesystem(pathToUrl)) ||
+            (cacheBufferMode == CACHE_BUFFER_MODE_ALL &&
+             (URIUtils::IsNetworkFilesystem(pathToUrl) || URIUtils::IsHD(pathToUrl))))
         {
           m_flags |= READ_CACHED;
         }

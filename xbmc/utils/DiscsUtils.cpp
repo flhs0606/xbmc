@@ -75,9 +75,9 @@ UTILS::DISCS::DiscInfo UTILS::DISCS::ProbeBlurayDiscInfo(const std::string& medi
   return info;
 }
 
-bool UTILS::DISCS::IsBlurayDiscImage(const std::string& path)
+bool UTILS::DISCS::IsBlurayDiscImage(const std::string& path, bool isKnownDiscImage)
 {
-  if (!URIUtils::IsDiscImage(path))
+  if (!isKnownDiscImage && !URIUtils::IsDiscImage(path))
     return false;
 
   static constexpr std::array<std::string_view, 4> blurayFiles = {
@@ -97,4 +97,9 @@ bool UTILS::DISCS::IsBlurayDiscImage(const std::string& path)
                        return XFILE::CFile::Exists(
                            URIUtils::AddFileToFolder(basePath, std::string(file)));
                      });
+}
+
+bool UTILS::DISCS::IsBlurayDiscImage(const CFileItem& item)
+{
+  return IsBlurayDiscImage(item.GetDynPath(), item.IsDiscImage());
 }
