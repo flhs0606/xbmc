@@ -151,6 +151,7 @@ private:
   uint32_t m_dlStatBL = 0;
   uint32_t m_dlStatEL = 0;
   uint32_t m_dlStatPaired = 0;
+  uint32_t m_dlStatFifo = 0;
   uint32_t m_dlStatEvicted = 0;
   double m_dlStatMissDelta = 0.0;
   double m_dlLastPts{DVD_NOPTS_VALUE};
