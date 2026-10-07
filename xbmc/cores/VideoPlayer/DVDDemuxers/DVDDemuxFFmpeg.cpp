@@ -1322,19 +1322,6 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         pPacket->isDualStream = m_dv_dual_stream;
         pPacket->isELPackage =
             stream && m_dv_dual_stream && stream->uniqueId != m_dv_bl_stream_idx;
-        {
-          auto now = std::chrono::steady_clock::now();
-          auto& lastT = pPacket->isELPackage ? m_lastELLogTime : m_lastBLLogTime;
-          if (now - lastT >= std::chrono::seconds(1))
-          {
-            logComponentM(LOGDEBUG, LOGFFMPEG,
-                          "DemuxFFmpeg pkt streamId={} isEL={} isDual={} size={} pts={:.3f}",
-                          pPacket->iStreamId, pPacket->isELPackage,
-                          pPacket->isDualStream, pPacket->iSize,
-                          pPacket->pts / DVD_TIME_BASE);
-            lastT = now;
-          }
-        }
       }
     }
     if (stream && m_pSSIF)
@@ -2654,7 +2641,7 @@ bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
 
     if (startpts)
     {
-      *startpts = DVD_SEC_TO_TIME(static_cast<double>(ich->GetChapterPos(chapter)));
+      *startpts = DVD_NOPTS_VALUE;
     }
 
     Flush();

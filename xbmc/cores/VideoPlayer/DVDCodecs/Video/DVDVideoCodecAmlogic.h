@@ -40,6 +40,7 @@ struct DLDemuxPacket
   bool isELPackage{false};
   double dts{0.0};
   double pts{0.0};
+  double m_ptsOffsetCorrection{0.0};
 };
 
 class CAMLVideoBuffer : public CVideoBuffer
@@ -133,11 +134,24 @@ protected:
 private:
   static constexpr std::size_t MAX_CACHED_DUAL_LAYER_PACKETS = 2;
 
+  struct DualLayerStats
+  {
+    uint32_t bl = 0;
+    uint32_t el = 0;
+    uint32_t paired = 0;
+    uint32_t evicted = 0;
+    uint32_t ordered = 0;
+    uint32_t untimedBL = 0;
+    uint32_t untimedEL = 0;
+    uint32_t depthMax = 0;
+    double missDelta = -1.0;
+  };
+
   bool DualLayerConvert(uint8_t *pData, uint32_t iSize, const DemuxPacket &packet);
   bool SingleLayerConvert(uint8_t *pData, uint32_t iSize, const DemuxPacket &packet) const;
   DLDemuxPacket AcquireDualLayerPacket(std::size_t requiredCapacity);
   void RecycleDualLayerPacket(DLDemuxPacket&& packet);
-  void ClearBitstreamCommon(void);
+  void ResetDualLayerState();
   void UpdateAppendCMv40SettingCache();
   void ApplyDynamicDoViSettings();
   DOVICMv40Mode EffectiveCMv40Mode(DOVICMv40Mode mode);
@@ -148,12 +162,8 @@ private:
   std::list<DLDemuxPacket> m_packages;
   std::vector<DLDemuxPacket> m_freePackages;
 
-  uint32_t m_dlStatBL = 0;
-  uint32_t m_dlStatEL = 0;
-  uint32_t m_dlStatPaired = 0;
-  uint32_t m_dlStatFifo = 0;
-  uint32_t m_dlStatEvicted = 0;
-  double m_dlStatMissDelta = 0.0;
+  DualLayerStats m_dlStats;
+  uint32_t m_dlNoptsRun = 0;
   double m_dlLastPts{DVD_NOPTS_VALUE};
   double m_dlLastDts{DVD_NOPTS_VALUE};
   int64_t m_dlStatLastLog = 0;

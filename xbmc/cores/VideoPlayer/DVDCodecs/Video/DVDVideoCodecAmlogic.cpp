@@ -300,8 +300,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_stripHdr10Plus = false;
   m_streamMeta = {};
   m_metadataSequencer.Reset();
-  m_dlLastPts = DVD_NOPTS_VALUE;
-  m_dlLastDts = DVD_NOPTS_VALUE;
+  ResetDualLayerState();
 
   CLog::Log(LOGDEBUG, "{}::{} - codec {:d} profile:{:d} extra_size:{:d} fps:{:d}/{:d}",
     __MODULE_NAME__, __FUNCTION__, m_hints.codec, m_hints.profile, m_hints.extradata.GetSize(), m_hints.fpsrate, m_hints.fpsscale);
@@ -767,28 +766,29 @@ void CDVDVideoCodecAmlogic::Close(void)
 
   m_opened = false;
 
-  while (!m_packages.empty())
-  {
-    RecycleDualLayerPacket(std::move(m_packages.front()));
-    m_packages.pop_front();
-  }
   m_freePackages.clear();
   m_last_added = true;
   m_last_pData = nullptr;
   m_last_iSize = 0;
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
-  m_dlStatBL = 0;
-  m_dlStatEL = 0;
-  m_dlStatPaired = 0;
-  m_dlStatFifo = 0;
-  m_dlStatEvicted = 0;
-  m_dlStatMissDelta = -1.0;
-  m_dlLastPts = DVD_NOPTS_VALUE;
-  m_dlLastDts = DVD_NOPTS_VALUE;
+  ResetDualLayerState();
 
   if (m_bitstream && (m_hints.codec == AV_CODEC_ID_H264 || m_hints.codec == AV_CODEC_ID_HEVC))
     m_bitstream->ResetStartDecode();
+}
+
+void CDVDVideoCodecAmlogic::ResetDualLayerState()
+{
+  while (!m_packages.empty())
+  {
+    RecycleDualLayerPacket(std::move(m_packages.front()));
+    m_packages.pop_front();
+  }
+  m_dlStats = {};
+  m_dlNoptsRun = 0;
+  m_dlLastPts = DVD_NOPTS_VALUE;
+  m_dlLastDts = DVD_NOPTS_VALUE;
 }
 
 DLDemuxPacket CDVDVideoCodecAmlogic::AcquireDualLayerPacket(std::size_t requiredCapacity)
@@ -812,6 +812,7 @@ void CDVDVideoCodecAmlogic::RecycleDualLayerPacket(DLDemuxPacket&& packet)
   packet.isELPackage = false;
   packet.dts = 0.0;
   packet.pts = 0.0;
+  packet.m_ptsOffsetCorrection = 0.0;
 
   if (m_freePackages.size() < MAX_CACHED_DUAL_LAYER_PACKETS)
     m_freePackages.emplace_back(std::move(packet));
@@ -821,143 +822,164 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
 {
   bool dual_layer_converted = false;
 
-  if (packet.isELPackage)
-    ++m_dlStatEL;
+  ++(packet.isELPackage ? m_dlStats.el : m_dlStats.bl);
+
+  const double frame_period = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+    ? (static_cast<double>(DVD_TIME_BASE) * m_hints.fpsscale / m_hints.fpsrate)
+    : (DVD_TIME_BASE / 24.0);
+  const double match_tolerance = std::max(frame_period * 0.5, DVD_MSEC_TO_TIME(25.0));
+  constexpr size_t max_queue_depth = 128;
+  // Upper bound on the number of consecutive access units whose Base Layer timestamp may be
+  // reconstructed by extrapolation before the reconstruction is treated as untrustworthy.
+  constexpr uint32_t max_timestamp_extrapolation = 120;
+
+  const bool pkt_pts_valid = IsValidTimestamp(packet.pts);
+  if (!pkt_pts_valid)
+    ++(packet.isELPackage ? m_dlStats.untimedEL : m_dlStats.untimedBL);
+
+  // The oldest queued opposite-layer packet is the ordinal partner of the incoming packet.
+  const auto ordinalIt = std::find_if(
+      m_packages.begin(), m_packages.end(),
+      [&packet](const auto& p) { return p.isELPackage != packet.isELPackage; });
+
+  // PTS is the only matching basis: it is identical across both layers (dPTS == 0) whereas the
+  // two layers carry different DTS semantics. Whenever a PTS is missing on either side of the
+  // pair the timestamp search cannot succeed, so the ordinal path takes over instead.
+  const bool ordinal_forced =
+      !pkt_pts_valid ||
+      (ordinalIt != m_packages.end() && !IsValidTimestamp(ordinalIt->pts));
+
+  auto matchIt = m_packages.end();
+  bool ordinal_match = false;
+
+  if (ordinal_forced)
+  {
+    // Stage 2 - ordinal pairing, strictly order preserving and strictly limited to the case where
+    // a timestamp is missing on one side. That is exactly the situation a seamless branching seam
+    // creates when CheckContinuity blanks the Base Layer timestamps.
+    if (ordinalIt != m_packages.end())
+    {
+      matchIt = ordinalIt;
+      ordinal_match = true;
+    }
+  }
   else
-    ++m_dlStatBL;
-
-  const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
-    ? (static_cast<double>(m_hints.fpsrate) / static_cast<double>(m_hints.fpsscale))
-    : 24.0;
-  const double frame_period = static_cast<double>(DVD_TIME_BASE) / (fps > 0.0 ? fps : 24.0);
-  const double match_tolerance = frame_period * 0.8;
-
-  // =========================================================================
-  // Unified Dual-Layer matching (applies to both FEL and MEL from frame 0):
-  // Tier 1: DTS-based nearest-neighbor (native decode causality dependency order)
-  // Tier 2: PTS-based nearest-neighbor fallback (when DTS is missing/invalid)
-  // Tier 3: Positional FIFO fallback (when timestamps are absent or across seam)
-  // =========================================================================
-  auto findNearestOpposite = [&](double targetTs, double DLDemuxPacket::*field) {
-    if (targetTs == DVD_NOPTS_VALUE)
-      return m_packages.end();
-
-    auto bestIt = m_packages.end();
-    double bestDelta = -1.0;
-
+  {
+    // Stage 1 - timestamp matching over the opposite layer (R10 pure PTS baseline).
+    double best_delta = match_tolerance + 1.0;
     for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
     {
-      if (it->isELPackage == packet.isELPackage)
+      if (it->isELPackage == packet.isELPackage || !IsValidTimestamp(it->pts))
         continue;
-      const double ts = (*it).*field;
-      if (ts == DVD_NOPTS_VALUE)
-        continue;
-      const double delta = std::abs(targetTs - ts);
-      if (bestDelta < 0.0 || delta < bestDelta)
+
+      // 1. Direct PTS nearest-neighbor (continuous playback timeline: BL PTS == EL PTS)
+      double delta = std::abs(packet.pts - it->pts);
+
+      // 2. Raw M2TS PTS nearest-neighbor across seamless branching seams where
+      //    CVideoPlayer::CheckContinuity shifted the Base Layer while Enhancement Layer is still raw.
+      if (delta > match_tolerance)
       {
-        bestDelta = delta;
-        bestIt = it;
+        const double rawDelta = std::abs((packet.pts + packet.m_ptsOffsetCorrection) -
+                                         (it->pts + it->m_ptsOffsetCorrection));
+        if (rawDelta < delta)
+          delta = rawDelta;
+      }
+
+      if (delta < best_delta)
+      {
+        best_delta = delta;
+        matchIt = it;
         if (delta == 0.0)
           break;
       }
     }
 
-    if (bestIt != m_packages.end())
+    if (best_delta > match_tolerance)
     {
-      if (bestDelta <= match_tolerance)
-        return bestIt;
-      if (m_dlStatMissDelta < 0.0 || bestDelta < m_dlStatMissDelta)
-        m_dlStatMissDelta = bestDelta;
-    }
-    return m_packages.end();
-  };
-
-  auto matchIt = findNearestOpposite(packet.dts, &DLDemuxPacket::dts);
-  if (matchIt == m_packages.end())
-    matchIt = findNearestOpposite(packet.pts, &DLDemuxPacket::pts);
-
-  bool positional_match = false;
-  if (matchIt == m_packages.end())
-  {
-    for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
-    {
-      if (it->isELPackage != packet.isELPackage)
-      {
-        matchIt = it;
-        positional_match = true;
-        break;
-      }
+      m_dlStats.missDelta = best_delta;
+      matchIt = m_packages.end();
     }
   }
 
   const bool have_match = (matchIt != m_packages.end());
 
-  if (positional_match)
-    LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
-                          "dlpair: positional FIFO fallback pairing (isEL={})",
+  if (ordinal_match)
+    LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000, "dlpair: ordinal pairing (isEL={})",
                           packet.isELPackage);
 
   if (have_match)
   {
     DLDemuxPacket& dualLayerPacket = *matchIt;
 
-    // Base Layer is the master display timeline.
-    // Always anchor combined AU timestamps to the Base Layer packet.
+    // The Base Layer packet owns the master display timeline. Its timestamps are authoritative
+    // and must never be substituted by the Enhancement Layer ones: the Enhancement Layer is
+    // routed straight to the video player and bypasses CVideoPlayer::CheckContinuity, so across
+    // a seamless branching seam it still carries the original stream timebase while the Base
+    // Layer has already been shifted onto the continuous timeline.
     double bl_pts = packet.isELPackage ? dualLayerPacket.pts : packet.pts;
     double bl_dts = packet.isELPackage ? dualLayerPacket.dts : packet.dts;
+    const bool bl_pts_native = IsValidTimestamp(bl_pts);
+    const bool bl_dts_native = IsValidTimestamp(bl_dts);
 
-    // Guard against timestamp-less packets (e.g. at seam transitions):
-    if (bl_pts == DVD_NOPTS_VALUE || !std::isfinite(bl_pts) || bl_pts < 0.0)
+    bool bl_pts_valid = bl_pts_native;
+    bool bl_dts_valid = bl_dts_native;
+
+    // CheckContinuity blanks the Base Layer timestamps for the first frames of a new clip when
+    // its audio/video agreement gate rejects the correction. Reconstruct them from the last
+    // locked value plus the nominal frame period so that the hardware decoder never receives a
+    // timestamp-less access unit, and re-lock as soon as real timestamps return.
+    if (!bl_pts_native && IsValidTimestamp(m_dlLastPts) &&
+        m_dlNoptsRun < max_timestamp_extrapolation)
     {
-      if (m_dlLastPts != DVD_NOPTS_VALUE && m_dlLastPts >= 0.0)
-        bl_pts = m_dlLastPts + frame_period;
-      else
-        bl_pts = DVD_NOPTS_VALUE;
+      bl_pts = m_dlLastPts + frame_period;
+      bl_pts_valid = true;
     }
-    if (bl_dts == DVD_NOPTS_VALUE || !std::isfinite(bl_dts) || bl_dts < 0.0)
+    if (!bl_dts_native && IsValidTimestamp(m_dlLastDts) &&
+        m_dlNoptsRun < max_timestamp_extrapolation)
     {
-      if (m_dlLastDts != DVD_NOPTS_VALUE && m_dlLastDts >= 0.0)
-        bl_dts = m_dlLastDts + frame_period;
-      else
-        bl_dts = bl_pts;
+      bl_dts = m_dlLastDts + frame_period;
+      bl_dts_valid = true;
+    }
+    if (!bl_dts_valid)
+    {
+      bl_dts = bl_pts;
+      bl_dts_valid = bl_pts_valid;
     }
 
-    if (packet.isELPackage)
-      dual_layer_converted = m_bitstream->Convert(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, pData, iSize, bl_pts);
-    else
-      dual_layer_converted = m_bitstream->Convert(pData, iSize, dualLayerPacket.buffer.GetData(), dualLayerPacket.size, bl_pts);
+    if (bl_pts_native)
+      m_dlNoptsRun = 0;
+    else if (bl_pts_valid)
+      ++m_dlNoptsRun;
 
-    if (dual_layer_converted && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE &&
-        m_hints.codec == AV_CODEC_ID_HEVC)
-    {
-      m_pendingMeta = m_streamMeta;
-      if (packet.isELPackage)
-      {
-        AMLLatchHevcDoviRpu(pData, iSize, m_nalLengthSize, m_pendingMeta);
-        AMLLatchHevcSei(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                        m_pendingMeta);
-      }
-      else
-      {
-        AMLLatchHevcDoviRpu(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                            m_pendingMeta);
-        AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
-      }
-      if (!m_pendingMeta.hdrMdcv.empty())
-        m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
-      if (!m_pendingMeta.hdrCll.empty())
-        m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
-    }
+    if (bl_pts_valid)
+      m_dlLastPts = bl_pts;
+    if (bl_dts_valid)
+      m_dlLastDts = bl_dts;
+
+    const double convertPts = bl_pts_valid ? bl_pts : DVD_NOPTS_VALUE;
+    uint8_t* blData = packet.isELPackage ? dualLayerPacket.buffer.GetData() : pData;
+    const uint32_t blSize = packet.isELPackage ? dualLayerPacket.size : iSize;
+    uint8_t* elData = packet.isELPackage ? pData : dualLayerPacket.buffer.GetData();
+    const uint32_t elSize = packet.isELPackage ? iSize : dualLayerPacket.size;
+
+    dual_layer_converted = m_bitstream->Convert(blData, blSize, elData, elSize, convertPts);
 
     if (dual_layer_converted)
     {
-      if (IsValidTimestamp(bl_pts))
-        m_dlLastPts = bl_pts;
-      if (IsValidTimestamp(bl_dts))
-        m_dlLastDts = bl_dts;
-      ++m_dlStatPaired;
-      if (positional_match)
-        ++m_dlStatFifo;
+      if (m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE && m_hints.codec == AV_CODEC_ID_HEVC)
+      {
+        m_pendingMeta = m_streamMeta;
+        AMLLatchHevcDoviRpu(elData, elSize, m_nalLengthSize, m_pendingMeta);
+        AMLLatchHevcSei(blData, blSize, m_nalLengthSize, m_pendingMeta);
+        if (!m_pendingMeta.hdrMdcv.empty())
+          m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
+        if (!m_pendingMeta.hdrCll.empty())
+          m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
+      }
+
+      ++m_dlStats.paired;
+      if (ordinal_match)
+        ++m_dlStats.ordered;
       RecycleDualLayerPacket(std::move(*matchIt));
       m_packages.erase(matchIt);
     }
@@ -972,35 +994,36 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
     queuedPacket.isELPackage = packet.isELPackage;
     queuedPacket.dts = packet.dts;
     queuedPacket.pts = packet.pts;
+    queuedPacket.m_ptsOffsetCorrection = packet.m_ptsOffsetCorrection;
     m_packages.emplace_back(std::move(queuedPacket));
   }
 
-  // 128 packets provide ~5.3s interleaving buffer at 24fps and ~2.1s at 60fps.
-  // This safely absorbs M2TS chunk interleaving and network I/O jitter for both
-  // 24fps UHD Blu-ray (FEL/MEL) and 60fps high-framerate MEL streams.
-  constexpr size_t DUAL_LAYER_MAX_QUEUE_DEPTH = 128;
-  const size_t max_queue_depth = DUAL_LAYER_MAX_QUEUE_DEPTH;
-
   while (m_packages.size() > max_queue_depth)
   {
-    ++m_dlStatEvicted;
+    ++m_dlStats.evicted;
     RecycleDualLayerPacket(std::move(m_packages.front()));
     m_packages.pop_front();
   }
+
+  if (m_packages.size() > m_dlStats.depthMax)
+    m_dlStats.depthMax = static_cast<uint32_t>(m_packages.size());
 
   const int64_t now = CurrentHostCounter();
   if (now - m_dlStatLastLog >= CurrentHostFrequency())
   {
     m_dlStatLastLog = now;
-    logComponentM(LOGDEBUG, LOGVIDEO,
-                  "dlpair: mode=DTS-AU bl={} el={} paired={} (fifo={}) evicted={} depth={} missDeltaMs={:.1f} tolMs={:.1f}",
-                  m_dlStatBL, m_dlStatEL, m_dlStatPaired, m_dlStatFifo, m_dlStatEvicted, m_packages.size(),
-                  m_dlStatMissDelta / 1000.0, match_tolerance / 1000.0);
-    m_dlStatBL = 0;
-    m_dlStatEL = 0;
-    m_dlStatPaired = 0;
-    m_dlStatFifo = 0;
-    m_dlStatEvicted = 0;
+    if (m_dlStats.bl > 0 || m_dlStats.el > 0 || m_dlStats.paired > 0)
+    {
+      CLog::Log(LOGDEBUG,
+                "dlpair: bl={} el={} paired={} ordinal={} untimedBL={} untimedEL={} evicted={} "
+                "depth={} maxDepth={} missMs={:.1f} tolMs={:.1f}",
+                m_dlStats.bl, m_dlStats.el, m_dlStats.paired, m_dlStats.ordered,
+                m_dlStats.untimedBL, m_dlStats.untimedEL, m_dlStats.evicted,
+                m_packages.size(), m_dlStats.depthMax,
+                m_dlStats.missDelta < 0.0 ? -1.0 : m_dlStats.missDelta / 1000.0,
+                match_tolerance / 1000.0);
+    }
+    m_dlStats = {};
   }
 
   if (!dual_layer_converted)
@@ -1170,10 +1193,10 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             m_pendingMeta = m_streamMeta;
             return true;
           }
-          if (IsValidTimestamp(m_dlLastDts))
-            effectiveDts = m_dlLastDts;
-          if (IsValidTimestamp(m_dlLastPts))
+          if (m_dlLastPts != DVD_NOPTS_VALUE)
             effectivePts = m_dlLastPts;
+          if (m_dlLastDts != DVD_NOPTS_VALUE)
+            effectiveDts = m_dlLastDts;
         }
         else
         {
@@ -1267,11 +1290,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  if (!IsValidTimestamp(effectivePts))
-    effectivePts = DVD_NOPTS_VALUE;
-  if (!IsValidTimestamp(effectiveDts))
-    effectiveDts = DVD_NOPTS_VALUE;
-
   m_last_added = m_Codec->AddData(pData, iSize, effectiveDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : effectivePts);
 
   if (m_stripHdr10Plus && !m_pendingMeta.hdr10pSei.empty() &&
@@ -1354,11 +1372,6 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   m_Codec->Reset();
 
-  while (!m_packages.empty())
-  {
-    RecycleDualLayerPacket(std::move(m_packages.front()));
-    m_packages.pop_front();
-  }
   m_last_added = true;
   m_last_pData = nullptr;
   m_last_iSize = 0;
@@ -1367,14 +1380,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
   m_has_keyframe = false;
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
-  m_dlLastPts = DVD_NOPTS_VALUE;
-  m_dlLastDts = DVD_NOPTS_VALUE;
-  m_dlStatBL = 0;
-  m_dlStatEL = 0;
-  m_dlStatPaired = 0;
-  m_dlStatFifo = 0;
-  m_dlStatEvicted = 0;
-  m_dlStatMissDelta = -1.0;
+  ResetDualLayerState();
   if (m_bitstream && (m_hints.codec == AV_CODEC_ID_H264 || m_hints.codec == AV_CODEC_ID_HEVC))
     m_bitstream->ResetStartDecode();
 }

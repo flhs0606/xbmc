@@ -3943,6 +3943,10 @@ void CVideoPlayer::HandleMessages()
       double start = DVD_NOPTS_VALUE;
       int offset = 0;
 
+      const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+      const bool fastSeek =
+          settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_FAST_SEEK);
+
       const int64_t chapterStartMs = GetChapterPos(msg.GetChapter()) * 1000;
       const int64_t currentTimeMs = GetTime();
       const int64_t clampedMs =
@@ -3958,7 +3962,7 @@ void CVideoPlayer::HandleMessages()
           CDVDMsgPlayerSeek::CMode mode;
           mode.time = static_cast<double>(clampedMs);
           mode.backward = true;
-          mode.accurate = true;
+          mode.accurate = !fastSeek;
           mode.trickplay = false;
           mode.sync = true;
           m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
@@ -3971,37 +3975,40 @@ void CVideoPlayer::HandleMessages()
                         msg.GetChapter());
         }
       }
-      // This should always be the case.
-      else if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
+      else
       {
-        FlushBuffers(start, true, true);
-        m_subtitleSeekNewRun = true;
-        RecallSubtitlesAfterSeek(start, (start + m_State.time_offset) / 1000.0);
-        int64_t beforeSeek = GetTime();
-        offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
-        m_callback.OnPlayBackSeekChapter(msg.GetChapter());
-      }
-      else if (m_pInputStream)
-      {
-        CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
-        if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
+        bool chapterSeekDone = false;
+        if (m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
+          chapterSeekDone = true;
+        else if (m_pInputStream)
         {
-          FlushBuffers(start, true, true);
+          CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
+          if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
+            chapterSeekDone = true;
+        }
+
+        if (chapterSeekDone)
+        {
+          if (start == DVD_NOPTS_VALUE && chapterStartMs >= 0)
+            start = DVD_MSEC_TO_TIME(chapterStartMs) - m_State.time_offset;
+
+          if (start != DVD_NOPTS_VALUE)
+            m_State.dts = start;
+          m_State.lastSeek = m_clock.GetAbsoluteClock();
+
+          FlushBuffers(start, !fastSeek, true);
           m_subtitleSeekNewRun = true;
-          RecallSubtitlesAfterSeek(start, (start + m_State.time_offset) / 1000.0);
+          RecallSubtitlesAfterSeek(start, chapterStartMs >= 0 ? static_cast<double>(chapterStartMs) : (start + m_State.time_offset) / 1000.0);
           int64_t beforeSeek = GetTime();
-          offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+          offset = (chapterStartMs >= 0 ? static_cast<int>(chapterStartMs) : DVD_TIME_TO_MSEC(start + m_State.time_offset)) - static_cast<int>(beforeSeek);
           m_callback.OnPlayBackSeekChapter(msg.GetChapter());
+          m_processInfo->SetStateSeeking(false);
         }
         else
         {
           logComponentM(LOGDEBUG, LOGVIDEO, "chapter seek failed; keeping playback pos");
           SetCaching(cacheStateBeforeSeek);
         }
-      }
-      else
-      {
-        SetCaching(cacheStateBeforeSeek);
       }
       m_processInfo->SeekFinished(offset);
     }

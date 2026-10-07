@@ -2773,6 +2773,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       videoPicture.iDuration = rate_duration;
     }
     else if ((m_speed == DVD_PLAYSPEED_NORMAL) &&
+             m_hints.codec != AV_CODEC_ID_HEVC &&
              (((duration_ratio >= 0.0) && (duration_ratio < 0.2)) ||
               ((duration_ratio > 1.5) && (duration_ratio < 4.0))))
     {
@@ -2784,23 +2785,26 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     else
       videoPicture.iDuration = rate_duration;
 
-    LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
-                          "picdur: vrate={} rateDurMs={:.2f} picDurMs={:.2f} ratio={:.3f} "
-                          "outDurMs={:.2f} dPtsMs={:.2f} rawPtsMs={:.2f} leadMs={:.2f} "
-                          "leadExceeded={} rewrote={} sel25={} repair={}",
-                          am_private->video_rate, rate_duration / 1000.0,
-                          picture_duration / 1000.0, duration_ratio,
-                          videoPicture.iDuration / 1000.0,
-                          m_last_pts == DVD_NOPTS_VALUE
-                              ? 0.0
-                              : (static_cast<double>(entry_pts) -
-                                 static_cast<double>(m_last_pts)) / 1000.0,
-                          static_cast<double>(entry_pts) / 1000.0,
-                          (static_cast<double>(m_cur_pts) -
-                           static_cast<double>(entry_pts)) / 1000.0,
-                          (m_last_pts != DVD_NOPTS_VALUE) && !rewrite_within_lead,
-                          entry_pts != m_cur_pts, is_sel_25hz_interlaced,
-                          m_repairTimestamps);
+    if (entry_pts != m_cur_pts || m_repairExcursionRun > 0)
+    {
+      LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
+                            "picdur: vrate={} rateDurMs={:.2f} picDurMs={:.2f} ratio={:.3f} "
+                            "outDurMs={:.2f} dPtsMs={:.2f} rawPtsMs={:.2f} leadMs={:.2f} "
+                            "leadExceeded={} rewrote={} sel25={} repair={}",
+                            am_private->video_rate, rate_duration / 1000.0,
+                            picture_duration / 1000.0, duration_ratio,
+                            videoPicture.iDuration / 1000.0,
+                            m_last_pts == DVD_NOPTS_VALUE
+                                ? 0.0
+                                : (static_cast<double>(entry_pts) -
+                                   static_cast<double>(m_last_pts)) / 1000.0,
+                            static_cast<double>(entry_pts) / 1000.0,
+                            (static_cast<double>(m_cur_pts) -
+                             static_cast<double>(entry_pts)) / 1000.0,
+                            (m_last_pts != DVD_NOPTS_VALUE) && !rewrite_within_lead,
+                            entry_pts != m_cur_pts, is_sel_25hz_interlaced,
+                            m_repairTimestamps);
+    }
 
     if (entry_pts != m_cur_pts)
       LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 200,
