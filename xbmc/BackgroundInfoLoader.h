@@ -12,7 +12,6 @@
 #include "threads/CriticalSection.h"
 #include "threads/IRunnable.h"
 
-#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -45,12 +44,6 @@ public:
   void StopThread(); // will actually stop the loader thread.
   void StopAsync();  // will ask loader to stop as soon as possible, but not block
 
-  /*! \brief Set high-priority range for visible viewport items to be loaded first
-   \param start The start index in the item vector
-   \param count The number of items to prioritize
-   */
-  void SetPriorityRange(int start, int count);
-
 protected:
   virtual void OnLoaderStart() {}
   virtual void OnLoaderFinish() {}
@@ -58,10 +51,6 @@ protected:
   CFileItemList* m_pVecItems{nullptr};
   std::vector<CFileItemPtr> m_vecItems; // FileItemList would delete the items and we only want to keep a reference.
   CCriticalSection m_lock;
-
-  std::atomic<int> m_priorityStart{-1};
-  std::atomic<int> m_priorityCount{0};
-  std::atomic<bool> m_hasPriority{false};
 
   volatile bool m_bIsLoading{false};
   volatile bool m_bStop{true};
