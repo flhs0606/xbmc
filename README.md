@@ -32,7 +32,6 @@
 
 #### 2. HDR Vivid 支持与实时转码
 * **实时转码为杜比视界 RPU**：内置 HDR Vivid 动态元数据解析器，在解码时将其动态映射曲线实时转换为 Dolby Vision RPU (Profile 8.1)，使不支持 HDR Vivid 的杜比视界显示设备可呈现动态色调映射。
-* **HLG SEI 透传修复**：修复 SEI prefix fast-path 遗漏 147 标识的问题，避免广播 HLG 片源被错误识别为 SDR。
 
 #### 3. 蓝光与 ISO 镜像播放优化
 * **移植 Kodi v22 蓝光架构**：同步 Kodi v22 的 `MPLSParser`、`M2TSParser`、虚拟目录结构及 `DiscDirectoryHelper`。
@@ -95,7 +94,6 @@ This project is an enhanced branch of **Kodi 21.3 Omega** tailored for Amlogic S
 
 #### 2. HDR Vivid Support & Real-Time Transcoding
 * **Real-Time Conversion to Dolby Vision RPU**: Parses HDR Vivid dynamic metadata and converts tone-mapping curves on the fly to Dolby Vision RPU (Profile 8.1), enabling dynamic tone mapping on Dolby Vision displays that do not natively support HDR Vivid.
-* **HLG SEI Passthrough Fix**: Corrects an omission in the SEI prefix fast-path where type 147 metadata was discarded, preventing broadcast HLG content from being misidentified as SDR.
 
 #### 3. Blu-ray & Disc Image Optimization
 * **Backported Kodi v22 Disc Infrastructure**: Incorporates `MPLSParser`, `M2TSParser`, virtual directory handling, and `DiscDirectoryHelper` from Kodi v22.
