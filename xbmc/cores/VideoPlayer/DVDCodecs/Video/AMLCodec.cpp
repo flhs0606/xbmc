@@ -2773,9 +2773,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       videoPicture.iDuration = rate_duration;
     }
     else if ((m_speed == DVD_PLAYSPEED_NORMAL) &&
-             m_hints.codec != AV_CODEC_ID_HEVC &&
              (((duration_ratio >= 0.0) && (duration_ratio < 0.2)) ||
-              ((duration_ratio > 1.5) && (duration_ratio < 4.0))))
+              (m_hints.codec != AV_CODEC_ID_HEVC &&
+               ((duration_ratio > 1.5) && (duration_ratio < 4.0)))))
     {
       m_cur_pts = rewritten_pts;
       videoPicture.iDuration = rate_duration;
