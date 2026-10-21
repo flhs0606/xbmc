@@ -42,15 +42,33 @@ bool CPlayerUtils::IsItemPlayable(const CFileItem& itemIn)
 void CPlayerUtils::AdvanceTempoStep(std::shared_ptr<CApplicationPlayer> appPlayer,
                                     TempoStepChange change)
 {
-  const auto step = 0.1f;
-  const auto currentTempo = appPlayer->GetPlayTempo();
-  switch (change)
+  static const std::vector<float> tempoSteps = {1.0f, 1.25f, 1.5f, 2.0f};
+  const float currentTempo = appPlayer->GetPlayTempo();
+
+  if (change == TempoStepChange::INCREASE)
   {
-    case TempoStepChange::INCREASE:
-      appPlayer->SetTempo(currentTempo + step);
-      break;
-    case TempoStepChange::DECREASE:
-      appPlayer->SetTempo(currentTempo - step);
-      break;
+    for (float step : tempoSteps)
+    {
+      if (step > currentTempo + 0.01f)
+      {
+        appPlayer->SetTempo(step);
+        return;
+      }
+    }
+    // Loop back to 1.0x if already at or above maximum step
+    appPlayer->SetTempo(1.0f);
+  }
+  else if (change == TempoStepChange::DECREASE)
+  {
+    for (auto it = tempoSteps.rbegin(); it != tempoSteps.rend(); ++it)
+    {
+      if (*it < currentTempo - 0.01f)
+      {
+        appPlayer->SetTempo(*it);
+        return;
+      }
+    }
+    // Loop back to highest step if already at or below 1.0x
+    appPlayer->SetTempo(tempoSteps.back());
   }
 }

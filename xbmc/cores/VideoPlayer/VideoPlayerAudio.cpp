@@ -1418,3 +1418,23 @@ bool CVideoPlayerAudio::IsPassthrough() const
   std::unique_lock<CCriticalSection> lock(m_info_section);
   return m_info.passthrough;
 }
+
+void CVideoPlayerAudio::SetAllowPassthrough(bool allow)
+{
+  if (!m_messageQueue.IsInited())
+    return;
+
+  CAEStreamInfo::DataType streamType = allow ?
+      m_audioSink.GetPassthroughStreamType(m_streaminfo.codec, m_streaminfo.samplerate, m_streaminfo.profile) :
+      CAEStreamInfo::STREAM_TYPE_NULL;
+
+  std::unique_ptr<CDVDAudioCodec> codec = CDVDFactoryCodec::CreateAudioCodec(
+      m_streaminfo, m_processInfo, allow, m_processInfo.AllowDTSHDDecode(), streamType);
+
+  if (codec)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayerAudio::SetAllowPassthrough - dynamic codec switch: allow passthrough = {}", allow);
+    m_messageQueue.Put(std::make_shared<CDVDMsgAudioCodecChange>(m_streaminfo, std::move(codec)), 0);
+  }
+}
+

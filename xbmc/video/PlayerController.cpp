@@ -363,21 +363,19 @@ bool CPlayerController::OnAction(const CAction &action)
       case ACTION_SUBTITLE_VSHIFT_UP:
       {
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
-        SUBTITLES::Align subAlign{settings->GetAlignment()};
-        if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
-          return true;
 
+        // Automatically switch to R10 manual offset mode (Mode 5)
+        if (settings->GetPgsVerticalMode() != 5)
+          settings->SetPgsVerticalMode(5);
+
+        int steps = settings->GetPgsVerticalOffsetSteps();
+        if (steps < 60)
+          steps++;
+        settings->SetPgsVerticalOffsetSteps(steps);
+
+        // Also adjust legacy text subtitle position for SRT/ASS compatibility
         RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
         CVideoSettings vs = appPlayer->GetVideoSettings();
-
-        int maxPos = resInfo.Overscan.bottom;
-        if (subAlign == SUBTITLES::Align::BOTTOM_OUTSIDE)
-        {
-          maxPos =
-              resInfo.Overscan.bottom + static_cast<int>(static_cast<float>(resInfo.iHeight) / 100 *
-                                                         settings->GetVerticalMarginPerc());
-        }
-
         vs.m_subtitleVerticalPosition -=
             static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_UP));
         if (vs.m_subtitleVerticalPosition < resInfo.Overscan.top)
@@ -385,34 +383,29 @@ bool CPlayerController::OnAction(const CAction &action)
         appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
                                                action.GetText() == "save");
 
-        ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
-                   static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
+        ShowSlider(action.GetID(), 65108, static_cast<float>(steps), -60.0f, 1.0f, 60.0f);
         return true;
       }
 
       case ACTION_SUBTITLE_VSHIFT_DOWN:
       {
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
-        SUBTITLES::Align subAlign{settings->GetAlignment()};
-        if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
-          return true;
 
+        // Automatically switch to R10 manual offset mode (Mode 5)
+        if (settings->GetPgsVerticalMode() != 5)
+          settings->SetPgsVerticalMode(5);
+
+        int steps = settings->GetPgsVerticalOffsetSteps();
+        if (steps > -60)
+          steps--;
+        settings->SetPgsVerticalOffsetSteps(steps);
+
+        // Also adjust legacy text subtitle position for SRT/ASS compatibility
         RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
         CVideoSettings vs = appPlayer->GetVideoSettings();
-
-        int maxPos = resInfo.Overscan.bottom;
-        if (subAlign == SUBTITLES::Align::BOTTOM_OUTSIDE)
-        {
-          // In this case the position not includes the vertical margin,
-          // so to be able to move the text to the bottom of the screen
-          // we must extend the maximum position with the vertical margin.
-          // Note that the text may go also slightly off-screen, this is
-          // caused by Libass see "displacement compensation" on OverlayRenderer
-          maxPos =
-              resInfo.Overscan.bottom + static_cast<int>(static_cast<float>(resInfo.iHeight) / 100 *
-                                                         settings->GetVerticalMarginPerc());
-        }
-
+        int maxPos = resInfo.Overscan.bottom +
+                     static_cast<int>(static_cast<float>(resInfo.iHeight) / 100 *
+                                      settings->GetVerticalMarginPerc());
         vs.m_subtitleVerticalPosition +=
             static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_DOWN));
         if (vs.m_subtitleVerticalPosition > maxPos)
@@ -420,8 +413,7 @@ bool CPlayerController::OnAction(const CAction &action)
         appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
                                                action.GetText() == "save");
 
-        ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
-                   static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
+        ShowSlider(action.GetID(), 65108, static_cast<float>(steps), -60.0f, 1.0f, 60.0f);
         return true;
       }
 
@@ -575,7 +567,7 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
   else if (m_sliderAction == ACTION_SUBTITLE_VSHIFT_UP ||
            m_sliderAction == ACTION_SUBTITLE_VSHIFT_DOWN)
   {
-    std::string strValue = StringUtils::Format("{:.0f}px", slider->GetFloatValue());
+    std::string strValue = StringUtils::Format("{:+.0f}", slider->GetFloatValue());
     slider->SetTextValue(strValue);
   }
   else if (m_sliderAction == ACTION_VOLAMP_UP ||

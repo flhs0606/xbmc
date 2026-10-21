@@ -338,6 +338,8 @@ public:
   void SetSpeed(float speed) override;
   void SetTempo(float tempo) override;
   bool SupportsTempo() const override;
+  virtual bool CanTempo();
+  void UpdateAudioPassthroughForSpeed(double speed);
   void FrameAdvance(int frames) override;
   void WaitAsyncMainPace() override;
   uint64_t GetVisibleOverlaySetSignature(bool& animated) const override;
@@ -526,6 +528,7 @@ protected:
   int64_t m_brokenFileStallBytes = -1;
 
   ECacheState  m_caching;
+  bool m_bPassthroughTempFallback{false};
   XbmcThreads::EndTime<> m_cachingTimer;
 
   std::chrono::steady_clock::time_point m_eofRenderWaitStart{};

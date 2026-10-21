@@ -100,6 +100,7 @@ public:
 
   bool IsStalled() const override { return m_stalled;  }
   bool IsPassthrough() const override;
+  void SetAllowPassthrough(bool allow) override;
 
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 

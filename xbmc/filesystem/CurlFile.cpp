@@ -36,6 +36,7 @@
 #include "utils/CharsetConverter.h"
 #include "utils/log.h"
 #include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 
 using namespace XFILE;
 using namespace XCURL;
@@ -458,6 +459,7 @@ void CCurlFile::Close()
   delete m_oldState;
   m_oldState = nullptr;
 
+  m_origUrl.clear();
   m_url.clear();
   m_referer.clear();
   m_cookie.clear();
@@ -536,6 +538,8 @@ void CCurlFile::SetCommonOptions(CReadState* state, bool failOnError /* = true *
   if (!m_verifyPeer)
     g_curlInterface.easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 0);
 
+  // Ensure url has no literal spaces before passing to libcurl
+  StringUtils::Replace(m_url, " ", "%20");
   g_curlInterface.easy_setopt(m_state->m_easyHandle, CURLOPT_URL, m_url.c_str());
   g_curlInterface.easy_setopt(m_state->m_easyHandle, CURLOPT_TRANSFERTEXT, CURL_OFF);
 
@@ -950,6 +954,9 @@ void CCurlFile::ParseAndCorrectUrl(CURL &url2)
     m_url = url2.GetWithoutUserDetails();
   else
     m_url = url2.Get();
+
+  // Normalize literal spaces to %20 to prevent libcurl CURLE_URL_MALFORMAT(3)
+  StringUtils::Replace(m_url, " ", "%20");
 }
 
 bool CCurlFile::Post(const std::string& strURL, const std::string& strPostData, std::string& strHTML)
@@ -1101,13 +1108,21 @@ bool CCurlFile::Open(const CURL& url)
 
   m_httpresponse = m_state->Connect(m_bufferSize);
 
-  if (m_httpresponse <= 0 || (m_failOnError && m_httpresponse >= 400))
+  // Fatal HTTP error codes (401 Unauthorized, 403 Forbidden, 404 Not Found, 410 Gone)
+  // must never be treated as valid stream opens, even if failonerror=false was passed
+  // in the URL protocol options.
+  const bool isFatalHttpError = (m_httpresponse == 401 || m_httpresponse == 403 ||
+                                 m_httpresponse == 404 || m_httpresponse == 410);
+  if (m_httpresponse <= 0 || (m_failOnError && m_httpresponse >= 400) || isFatalHttpError)
   {
     std::string error;
-    if (m_httpresponse >= 400 && CServiceBroker::GetLogging().CanLogComponent(LOGCURL))
+    if (m_httpresponse >= 400)
     {
       error.resize(4096);
-      ReadString(&error[0], 4095);
+      if (ReadString(&error[0], 4095))
+        error.resize(strlen(error.c_str()));
+      else
+        error.clear();
     }
 
     CLog::Log(LOGERROR, "CCurlFile::{} - <{}> Failed with code {}:\n{}", __FUNCTION__,
@@ -1135,18 +1150,10 @@ bool CCurlFile::Open(const CURL& url)
     throw new CRedirectException(new CShoutcastFile);
   }
 
+  // Modern Kodi uses CFileCache ahead of CCurlFile. Legacy CReadState multisession
+  // creates concurrent Range connections that violate CDN token concurrency limits
+  // (e.g. 115 CDN c=2 limit) and cause HTTP 403 on seek. Keep multisession disabled.
   m_multisession = false;
-  if(url2.IsProtocol("http") || url2.IsProtocol("https"))
-  {
-    m_multisession = true;
-    if(m_state->m_httpheader.GetValue("Server").find("Portable SDK for UPnP devices") != std::string::npos)
-    {
-      CLog::Log(LOGWARNING,
-                "CCurlFile::{} - <{}> Disabling multi session due to broken libupnp server",
-                __FUNCTION__, redactPath);
-      m_multisession = false;
-    }
-  }
 
   if(StringUtils::EqualsNoCase(m_state->m_httpheader.GetValue("Transfer-Encoding"), "chunked"))
     m_state->m_fileSize = 0;
@@ -1172,6 +1179,7 @@ bool CCurlFile::Open(const CURL& url)
       std::string redactEfpath = CURL::GetRedacted(efurl);
       CLog::Log(LOGDEBUG, "CCurlFile::{} - <{}> Effective URL is {}", __FUNCTION__, redactPath,
                 redactEfpath);
+      m_origUrl = m_url;
     }
     m_url = efurl;
   }
@@ -1463,9 +1471,35 @@ int64_t CCurlFile::Seek(int64_t iFilePosition, int iWhence)
   m_state->m_bRetry = m_allowRetry;
 
   long response = m_state->Connect(m_bufferSize);
-  if(response < 0 && (m_state->m_fileSize == 0 || m_state->m_fileSize != m_state->m_filePos))
+
+  // If seek on effective CDN URL failed with 4xx (e.g. 403 token expired / rejected)
+  // and we have the original redirection URL, re-query the original URL to obtain a fresh 302 token.
+  if (response >= 400 && response < 500 && response != 416 && response != 406 &&
+      !m_origUrl.empty() && m_origUrl != m_url)
   {
-    if(m_multisession)
+    CLog::Log(LOGWARNING,
+              "CCurlFile::{} - HTTP {} on CDN URL <{}>, re-resolving via original URL <{}>",
+              __FUNCTION__, response, CURL::GetRedacted(m_url), CURL::GetRedacted(m_origUrl));
+
+    m_state->Disconnect();
+    m_url = m_origUrl;
+    SetCommonOptions(m_state);
+    SetRequestHeaders(m_state);
+    m_state->m_filePos = nextPos;
+    m_state->m_sendRange = true;
+    m_state->m_bRetry = m_allowRetry;
+
+    response = m_state->Connect(m_bufferSize);
+
+    std::string newEfurl = GetInfoString(CURLINFO_EFFECTIVE_URL);
+    if (!newEfurl.empty())
+      m_url = newEfurl;
+  }
+
+  if ((response < 0 || response >= 400) &&
+      (m_state->m_fileSize == 0 || m_state->m_fileSize != m_state->m_filePos))
+  {
+    if (m_multisession)
     {
       if (m_oldState)
       {
@@ -1503,6 +1537,17 @@ int64_t CCurlFile::GetPosition()
 
 int CCurlFile::Stat(const CURL& url, struct __stat64* buffer)
 {
+  // Disc image files: return unknown size. The download layer discovers the size from the
+  // response; probing here would cost an extra request and, on some CDNs, burn a
+  // single-use redirect token.
+  if ((url.IsProtocol("http") || url.IsProtocol("https") ||
+       url.IsProtocol("dav") || url.IsProtocol("davs")) &&
+      URIUtils::IsDiscImage(url.GetFileName()))
+  {
+    if (buffer) { *buffer = {}; buffer->st_size = -1; buffer->st_mode = _S_IFREG; }
+    return 0;
+  }
+
   // if file is already running, get info from it
   if( m_opened )
   {

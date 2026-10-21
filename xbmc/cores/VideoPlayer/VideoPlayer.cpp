@@ -1021,9 +1021,12 @@ bool CVideoPlayer::OpenInputStream()
     // find any available external subtitles
     std::vector<std::string> filenames;
 
-    if (!URIUtils::IsUPnP(m_item.GetPath()) &&
+    const bool isStrm = URIUtils::HasExtension(m_item.GetPath(), ".strm") ||
+                        URIUtils::HasExtension(m_item.GetDynPath(), ".strm");
+    const std::string& scanPath = isStrm ? m_item.GetPath() : m_item.GetDynPath();
+    if (!URIUtils::IsUPnP(scanPath) &&
         !m_item.GetProperty("no-ext-subs-scan").asBoolean(false))
-      CUtil::ScanForExternalSubtitles(m_item.GetDynPath(), filenames);
+      CUtil::ScanForExternalSubtitles(scanPath, filenames);
 
     // load any subtitles from file item
     std::string key("subtitle:1");
@@ -3940,6 +3943,10 @@ void CVideoPlayer::HandleMessages()
       double start = DVD_NOPTS_VALUE;
       int offset = 0;
 
+      const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+      const bool fastSeek =
+          settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_FAST_SEEK);
+
       const int64_t chapterStartMs = GetChapterPos(msg.GetChapter()) * 1000;
       const int64_t currentTimeMs = GetTime();
       const int64_t clampedMs =
@@ -3955,7 +3962,7 @@ void CVideoPlayer::HandleMessages()
           CDVDMsgPlayerSeek::CMode mode;
           mode.time = static_cast<double>(clampedMs);
           mode.backward = true;
-          mode.accurate = true;
+          mode.accurate = !fastSeek;
           mode.trickplay = false;
           mode.sync = true;
           m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
@@ -3968,37 +3975,40 @@ void CVideoPlayer::HandleMessages()
                         msg.GetChapter());
         }
       }
-      // This should always be the case.
-      else if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
+      else
       {
-        FlushBuffers(start, true, true);
-        m_subtitleSeekNewRun = true;
-        RecallSubtitlesAfterSeek(start, (start + m_State.time_offset) / 1000.0);
-        int64_t beforeSeek = GetTime();
-        offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
-        m_callback.OnPlayBackSeekChapter(msg.GetChapter());
-      }
-      else if (m_pInputStream)
-      {
-        CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
-        if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
+        bool chapterSeekDone = false;
+        if (m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
+          chapterSeekDone = true;
+        else if (m_pInputStream)
         {
-          FlushBuffers(start, true, true);
+          CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
+          if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
+            chapterSeekDone = true;
+        }
+
+        if (chapterSeekDone)
+        {
+          if (start == DVD_NOPTS_VALUE && chapterStartMs >= 0)
+            start = DVD_MSEC_TO_TIME(chapterStartMs) - m_State.time_offset;
+
+          if (start != DVD_NOPTS_VALUE)
+            m_State.dts = start;
+          m_State.lastSeek = m_clock.GetAbsoluteClock();
+
+          FlushBuffers(start, !fastSeek, true);
           m_subtitleSeekNewRun = true;
-          RecallSubtitlesAfterSeek(start, (start + m_State.time_offset) / 1000.0);
+          RecallSubtitlesAfterSeek(start, chapterStartMs >= 0 ? static_cast<double>(chapterStartMs) : (start + m_State.time_offset) / 1000.0);
           int64_t beforeSeek = GetTime();
-          offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+          offset = (chapterStartMs >= 0 ? static_cast<int>(chapterStartMs) : DVD_TIME_TO_MSEC(start + m_State.time_offset)) - static_cast<int>(beforeSeek);
           m_callback.OnPlayBackSeekChapter(msg.GetChapter());
+          m_processInfo->SetStateSeeking(false);
         }
         else
         {
           logComponentM(LOGDEBUG, LOGVIDEO, "chapter seek failed; keeping playback pos");
           SetCaching(cacheStateBeforeSeek);
         }
-      }
-      else
-      {
-        SetCaching(cacheStateBeforeSeek);
       }
       m_processInfo->SeekFinished(offset);
     }
@@ -4414,6 +4424,7 @@ void CVideoPlayer::SetPlaySpeed(int speed)
 {
   if (IsPlaying())
   {
+    UpdateAudioPassthroughForSpeed(static_cast<double>(speed) / DVD_PLAYSPEED_NORMAL);
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, false };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
   }
@@ -4826,6 +4837,7 @@ void CVideoPlayer::SetTempo(float tempo)
   tempo = floor(tempo * 100.0f + 0.5f) / 100.0f;
   if (m_processInfo->IsTempoAllowed(tempo))
   {
+    UpdateAudioPassthroughForSpeed(tempo);
     int speed = tempo * DVD_PLAYSPEED_NORMAL;
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, true };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
@@ -4858,6 +4870,41 @@ bool CVideoPlayer::SupportsTempo() const
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   return m_State.cantempo;
 }
+
+bool CVideoPlayer::CanTempo()
+{
+  auto comp = CServiceBroker::GetSettingsComponent();
+  if (!comp)
+    return false;
+  auto settings = comp->GetSettings();
+  if (!settings)
+    return false;
+
+  return settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK) ||
+         settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK);
+}
+
+void CVideoPlayer::UpdateAudioPassthroughForSpeed(double speed)
+{
+  if (!m_VideoPlayerAudio)
+    return;
+
+  const bool isNonNormalSpeed = (speed != 1.0 && speed != 0.0);
+
+  if (isNonNormalSpeed && m_VideoPlayerAudio->IsPassthrough() && !m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: non-normal speed ({:.2f}x), temporarily disabling passthrough for audio tempo", speed);
+    m_bPassthroughTempFallback = true;
+    m_VideoPlayerAudio->SetAllowPassthrough(false);
+  }
+  else if (!isNonNormalSpeed && m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: returning to normal speed, restoring passthrough");
+    m_bPassthroughTempFallback = false;
+    m_VideoPlayerAudio->SetAllowPassthrough(true);
+  }
+}
+
 
 bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iStream, int source, bool reset /*= true*/)
 {
@@ -6715,7 +6762,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     bool realtime = m_pInputStream->IsRealtime();
 
-    state.cantempo = false;
+    state.cantempo = CanTempo() && !realtime;
 
     m_processInfo->SetStateRealtime(realtime);
   }
