@@ -2123,15 +2123,16 @@ bool CActiveAE::RunStages()
         else if (isDtsHdMaPassthrough)
           error = AdaptiveDampen(error, 60.0, 0.45, 0.95);
 
-        if (error > maxError)
+        if (std::abs(error) > maxError)
         {
-          CLog::Log(LOGWARNING, "ActiveAE - large audio sync error: {:f}", error);
-          error = maxError;
-        }
-        else if (error < -maxError)
-        {
-          CLog::Log(LOGWARNING, "ActiveAE - large audio sync error: {:f}", error);
-          error = -maxError;
+          static auto lastLogTime = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+          auto now = std::chrono::steady_clock::now();
+          if (now - lastLogTime > std::chrono::seconds(5))
+          {
+            CLog::Log(LOGWARNING, "ActiveAE - large audio sync error: {:f}", error);
+            lastLogTime = now;
+          }
+          error = std::clamp(error, -maxError, maxError);
         }
         (*it)->m_syncError.Add(error);
       }

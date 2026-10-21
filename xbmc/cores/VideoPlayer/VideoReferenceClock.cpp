@@ -7,17 +7,80 @@
  */
 #include "VideoReferenceClock.h"
 
+#include <algorithm>
+
 #include "ServiceBroker.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "settings/lib/Setting.h"
 #include "utils/MathUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/log.h"
+#include "utils/LogThrottle.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/VideoSync.h"
 #include "windowing/WinSystem.h"
 
+#if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
+#endif
+
+#include <chrono>
+#include <cmath>
+#include <limits>
 #include <mutex>
+
+namespace
+{
+#if defined(HAS_LIBAMCODEC)
+constexpr int64_t US_PER_SECOND{1000000};
+constexpr int64_t NS_PER_US{1000};
+constexpr int64_t MAX_AML_VSYNC_PHASE_US{std::numeric_limits<int>::max() / NS_PER_US};
+
+bool ConvertClockUnits(int64_t value,
+                       int64_t fromUnitsPerSecond,
+                       int64_t toUnitsPerSecond,
+                       int64_t upperBound,
+                       int64_t& result)
+{
+  result = 0;
+
+  if (value < 0 || fromUnitsPerSecond <= 0 || toUnitsPerSecond <= 0 || upperBound < 0)
+    return false;
+
+  const double scaled = static_cast<double>(value) * toUnitsPerSecond / fromUnitsPerSecond;
+  if (scaled < 0.0 || scaled > static_cast<double>(upperBound))
+    return false;
+
+  result = static_cast<int64_t>(std::llround(scaled));
+  return result >= 0 && result <= upperBound;
+}
+
+bool GetAmlTimeUntilVsyncPhase(int64_t afterVsync,
+                               int64_t systemFrequency,
+                               int64_t& timeUntilPhase)
+{
+  timeUntilPhase = 0;
+
+  if (afterVsync < 0 || systemFrequency <= 0) return false;
+
+  int64_t afterVsyncUs{0};
+  if (!ConvertClockUnits(afterVsync, systemFrequency, US_PER_SECOND, MAX_AML_VSYNC_PHASE_US,
+                         afterVsyncUs))
+    return false;
+
+  int timeUntilPhaseUs{0};
+  if (!aml_get_time_until_vsync_phase_us(static_cast<int>(afterVsyncUs), timeUntilPhaseUs))
+    return false;
+
+  if (!ConvertClockUnits(timeUntilPhaseUs, US_PER_SECOND, systemFrequency,
+                         std::numeric_limits<int64_t>::max(), timeUntilPhase))
+    return false;
+
+  return true;
+}
+#endif
+}
 
 CVideoReferenceClock::CVideoReferenceClock() : CThread("RefClock")
 {
@@ -34,11 +97,23 @@ CVideoReferenceClock::CVideoReferenceClock() : CThread("RefClock")
   m_VblankTime = 0;
   m_vsyncStopEvent.Reset();
 
+  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
+  {
+    if (const auto settings = settingsComponent->GetSettings())
+      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK});
+  }
+
   Start();
 }
 
 CVideoReferenceClock::~CVideoReferenceClock()
 {
+  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
+  {
+    if (const auto settings = settingsComponent->GetSettings())
+      settings->UnregisterCallback(this);
+  }
+
   m_bStop = true;
   m_vsyncStopEvent.Set();
   StopThread();
@@ -46,7 +121,50 @@ CVideoReferenceClock::~CVideoReferenceClock()
 
 void CVideoReferenceClock::Start()
 {
-  return;
+  std::unique_lock<CCriticalSection> lock(m_LifecycleSection);
+
+  if (IsRunning())
+    return;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (settings && !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK))
+    return;
+
+  m_disableRequested = false;
+  m_vsyncStopEvent.Reset();
+  m_bStop = false;
+
+  Create();
+}
+
+void CVideoReferenceClock::Stop()
+{
+  std::unique_lock<CCriticalSection> lock(m_LifecycleSection);
+
+  if (!IsRunning())
+    return;
+
+  m_disableRequested = true;
+  m_vsyncStopEvent.Set();
+  StopThread(true);
+}
+
+void CVideoReferenceClock::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+{
+  if (!setting)
+    return;
+
+  if (setting->GetId() != CSettings::SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK)
+    return;
+
+  const bool enabled = std::static_pointer_cast<const CSettingBool>(setting)->GetValue();
+
+  CLog::Log(LOGINFO, "CVideoReferenceClock: vsync ref-clock toggled {} via settings", enabled ? "ON" : "OFF");
+
+  if (enabled)
+    Start();
+  else
+    Stop();
 }
 
 void CVideoReferenceClock::UpdateClock(int NrVBlanks, uint64_t time)
@@ -75,7 +193,7 @@ void CVideoReferenceClock::Process()
     std::unique_lock SingleLock(m_CritSection);
 
     Now = CurrentHostCounter();
-    m_CurrTime = Now;
+    m_CurrTime = Now + m_TimeOffset;
     m_LastIntTime = m_CurrTime;
     m_CurrTimeFract = 0.0;
     m_ClockSpeed = 1.0;
@@ -104,6 +222,7 @@ void CVideoReferenceClock::Process()
 
     SingleLock.lock();
     m_UseVblank = false;                       //we're back to using the systemclock
+    m_TimeOffset = std::max(m_CurrTime, m_LastIntTime) - CurrentHostCounter();
     SingleLock.unlock();
 
     //clean up the vblank clock
@@ -115,6 +234,12 @@ void CVideoReferenceClock::Process()
 
     if (!SetupSuccess)
       break;
+
+    if (m_disableRequested.exchange(false))
+    {
+      CLog::Log(LOGINFO, "CVideoReferenceClock: vsync ref-clock disabled - exiting thread");
+      break;
+    }
   }
 }
 
@@ -129,14 +254,24 @@ void CVideoReferenceClock::UpdateClockInternal(int NrVBlanks, bool CheckMissed)
           "CVideoReferenceClock: detected {} vblanks, missed {}, refreshrate might have changed",
           NrVBlanks, m_MissedVblanks);
 
+    const int origNr = NrVBlanks;
+    const int origMissed = m_MissedVblanks;
     NrVBlanks -= m_MissedVblanks; //subtract the vblanks we missed
     m_MissedVblanks = 0;
+    if (NrVBlanks <= 0)
+    {
+      LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGAVTIMING, 1000,
+                    "CVideoReferenceClock: UpdateClock skipped advance "
+                    "(NrVBlanks={} - missed={} = {})",
+                    origNr, origMissed, NrVBlanks);
+    }
   }
   else
   {
     m_MissedVblanks += NrVBlanks;      //tell the vblank clock how many vblanks it missed
     m_TotalMissedVblanks += NrVBlanks; //for the codec information screen
-    m_VblankTime += m_SystemFrequency * static_cast<int64_t>(NrVBlanks) / MathUtils::round_int(m_RefreshRate); //set the vblank time forward
+    m_VblankTime += static_cast<int64_t>(
+        static_cast<double>(m_SystemFrequency) / m_RefreshRate * NrVBlanks);
   }
 
   if (NrVBlanks > 0) //update the clock with the adjusted frequency if we have any vblanks
@@ -172,10 +307,24 @@ int64_t CVideoReferenceClock::GetTime(bool interpolated /* = true*/)
     Now = CurrentHostCounter();        //get current system time
     NextVblank = TimeOfNextVblank();   //get time when the next vblank should happen
 
+    int synth = 0;
+    const int64_t vblankAtEntry = m_VblankTime;
     while(Now >= NextVblank)  //keep looping until the next vblank is in the future
     {
       UpdateClockInternal(1, false); //update clock when next vblank should have happened already
       NextVblank = TimeOfNextVblank(); //get time when the next vblank should happen
+      ++synth;
+    }
+    if (synth > 1)
+    {
+      LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGAVTIMING, 1000,
+                    "CVideoReferenceClock: GetTime synthesis fired {} iterations "
+                    "(stale_us={}, missed={}, total_missed={})",
+                    synth,
+                    (Now > vblankAtEntry)
+                        ? static_cast<int64_t>(static_cast<double>(Now - vblankAtEntry) / m_SystemFrequency * 1'000'000)
+                        : 0,
+                    m_MissedVblanks, m_TotalMissedVblanks);
     }
 
     if (interpolated)
@@ -199,7 +348,10 @@ int64_t CVideoReferenceClock::GetTime(bool interpolated /* = true*/)
   }
   else
   {
-    return CurrentHostCounter();
+    int64_t time = CurrentHostCounter() + m_TimeOffset;
+    if (time > m_LastIntTime)
+      m_LastIntTime = time;
+    return m_LastIntTime;
   }
 }
 
@@ -226,6 +378,36 @@ double CVideoReferenceClock::GetSpeed() const {
     return m_ClockSpeed;
   else
     return 1.0;
+}
+
+int64_t CVideoReferenceClock::GetTimeUntilVsyncPhase(int64_t afterVsync) const
+{
+  std::lock_guard SingleLock(m_CritSection);
+
+  if (!m_UseVblank)
+    return 0;
+
+#if defined(HAS_LIBAMCODEC)
+  int64_t timeUntilPhase{0};
+  if (GetAmlTimeUntilVsyncPhase(afterVsync, m_SystemFrequency, timeUntilPhase))
+    return timeUntilPhase;
+#endif
+
+  if (m_RefreshRate <= 0.0) return 0;
+
+  const int64_t interval = static_cast<int64_t>(static_cast<double>(m_SystemFrequency) / m_RefreshRate + 0.5);
+  if (interval <= 0) return 0;
+
+  const int64_t now = CurrentHostCounter();
+  int64_t target = m_VblankTime + afterVsync;
+  if (target <= now)
+  {
+    const int64_t elapsed = now - target;
+    const int64_t missedIntervals = elapsed / interval + 1;
+    target += missedIntervals * interval;
+  }
+
+  return target - now;
 }
 
 void CVideoReferenceClock::UpdateRefreshrate()
@@ -259,7 +441,8 @@ double CVideoReferenceClock::GetRefreshRate(double* interval /*= NULL*/) const {
 //increase that by 30% to allow for errors
 int64_t CVideoReferenceClock::TimeOfNextVblank() const
 {
-  return m_VblankTime + (m_SystemFrequency / MathUtils::round_int(m_RefreshRate) * MAXVBLANKDELAY / 10LL);
+  return m_VblankTime + static_cast<int64_t>(
+      static_cast<double>(m_SystemFrequency) / m_RefreshRate * MAXVBLANKDELAY / 10.0);
 }
 
 //for the codec information screen

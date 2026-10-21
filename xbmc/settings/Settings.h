@@ -106,6 +106,7 @@ public:
   static constexpr auto SETTING_VIDEOPLAYER_AUTOPLAYNEXTITEM = "videoplayer.autoplaynextitem";
   static constexpr auto SETTING_VIDEOPLAYER_SEEKSTEPS = "videoplayer.seeksteps";
   static constexpr auto SETTING_VIDEOPLAYER_SEEKDELAY = "videoplayer.seekdelay";
+  static constexpr auto SETTING_VIDEOPLAYER_MAX_SMOOTH_FF_SPEED = "videoplayer.maxsmoothff";
   static constexpr auto SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE = "videoplayer.adjustrefreshrate";
   static constexpr auto SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK = "videoplayer.usedisplayasclock";
   static constexpr auto SETTING_VIDEOPLAYER_ERRORINASPECT = "videoplayer.errorinaspect";
@@ -462,6 +463,9 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK = "coreelec.amlogic.usedisplayasclock";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_VIDEOSYNC_FALLBACK_ON_STALL = "coreelec.amlogic.videosync.fallback.on.stall";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MASTERCLOCK_VSYNC_OFFSET = "coreelec.amlogic.dolbyvision.masterclock.vsync.offset";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE = "coreelec.amlogic.dolbyvision.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE = "coreelec.amlogic.dolbyvision.mode.on.luminance";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_TYPE = "coreelec.amlogic.dolbyvision.type";

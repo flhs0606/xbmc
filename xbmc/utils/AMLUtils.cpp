@@ -18,6 +18,10 @@
 #include <numeric>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <limits>
+#include <sys/ioctl.h>
 
 #include "AMLUtils.h"
 
@@ -106,6 +110,164 @@ static void aml_dv_wait_dv_std_vsif_packet()
       usleep(10000); // wait 10ms
     }
   }
+}
+
+namespace
+{
+struct fb_vsync_timing_request
+{
+  int64_t now_ts;
+  int64_t last_vsync_ts;
+  int64_t next_vsync_ts;
+  int64_t period_ns;
+  int32_t reserved0;
+  int32_t reserved1;
+};
+
+#ifndef FBIO_GET_VSYNC_TIMING_64
+#define FBIO_GET_VSYNC_TIMING_64 _IOR('F', 0x25, struct fb_vsync_timing_request)
+#endif
+
+std::string GetFramebufferDevicePath()
+{
+  const char* env = getenv("FRAMEBUFFER");
+  if (env && env[0] != '\0')
+  {
+    std::string fb(env);
+    auto pos = fb.find("fb");
+    if (pos != std::string::npos)
+      fb = fb.substr(pos);
+
+    if (fb.rfind("/dev/", 0) == 0)
+      return fb;
+    return "/dev/" + fb;
+  }
+
+  return "/dev/fb0";
+}
+
+bool GetFramebufferDevice(int& fbFd, std::string* fbPath)
+{
+  static std::atomic<int> cachedFd{-1};
+
+  int fd = cachedFd.load(std::memory_order_acquire);
+  if (fd >= 0)
+  {
+    fbFd = fd;
+    if (fbPath)
+      *fbPath = GetFramebufferDevicePath();
+    return true;
+  }
+
+  std::string path = GetFramebufferDevicePath();
+  fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if (fd < 0)
+  {
+    CLog::Log(LOGWARNING, "AMLUtils: failed to open {}: {}", path, strerror(errno));
+    return false;
+  }
+
+  int expected = -1;
+  if (!cachedFd.compare_exchange_strong(expected, fd, std::memory_order_acq_rel))
+  {
+    close(fd);
+    fd = expected;
+  }
+  else
+    CLog::Log(LOGINFO, "AMLUtils: opened {} fd:{}", path, fd);
+
+  fbFd = fd;
+  if (fbPath)
+    *fbPath = path;
+  return true;
+}
+}
+
+bool aml_get_vsync_edge(int64_t& lastVsyncTs)
+{
+  lastVsyncTs = 0;
+
+  static std::atomic<bool> hasEdgeQuery{true};
+  if (!hasEdgeQuery.load(std::memory_order_relaxed))
+    return false;
+
+  int fbFd{-1};
+  if (!GetFramebufferDevice(fbFd, nullptr))
+    return false;
+
+  fb_vsync_timing_request req{};
+  if (ioctl(fbFd, FBIO_GET_VSYNC_TIMING_64, &req) < 0)
+  {
+    if (errno == ENOTTY || errno == EINVAL)
+    {
+      hasEdgeQuery.store(false, std::memory_order_relaxed);
+      CLog::Log(LOGINFO, "AMLUtils: vsync edge query unavailable");
+    }
+    return false;
+  }
+
+  if (req.last_vsync_ts <= 0)
+    return false;
+
+  lastVsyncTs = req.last_vsync_ts;
+  return true;
+}
+
+bool aml_get_time_until_vsync_phase_us(int afterVsyncUs, int& timeUntilPhaseUs)
+{
+  constexpr int64_t NS_PER_US{1000};
+
+  timeUntilPhaseUs = 0;
+
+  static std::atomic<bool> hasVsyncTiming{true};
+  if (!hasVsyncTiming.load(std::memory_order_relaxed))
+    return false;
+
+  int fbFd{-1};
+  std::string fbPath;
+  if (!GetFramebufferDevice(fbFd, &fbPath))
+    return false;
+
+  fb_vsync_timing_request req{};
+  if (ioctl(fbFd, FBIO_GET_VSYNC_TIMING_64, &req) < 0)
+  {
+    if (errno == ENOTTY || errno == EINVAL)
+    {
+      hasVsyncTiming.store(false, std::memory_order_relaxed);
+      CLog::Log(LOGINFO, "AMLUtils: vsync timing ioctl unavailable on {}", fbPath);
+    }
+    else if (errno != EAGAIN)
+      CLog::Log(LOGERROR, "AMLUtils: ioctl failed on {}: {}", fbPath, strerror(errno));
+    return false;
+  }
+
+  if (req.now_ts <= 0 || req.last_vsync_ts <= 0 || req.next_vsync_ts <= 0)
+    return false;
+
+  int64_t periodNs = req.period_ns;
+  if (periodNs <= 0)
+  {
+    if (req.next_vsync_ts <= req.last_vsync_ts)
+      return false;
+
+    periodNs = req.next_vsync_ts - req.last_vsync_ts;
+  }
+
+  int64_t phaseNs = std::max<int64_t>(0, static_cast<int64_t>(afterVsyncUs) * NS_PER_US);
+  if (phaseNs >= periodNs) phaseNs %= periodNs;
+
+  int64_t targetNs = req.last_vsync_ts + phaseNs;
+  if (targetNs <= req.now_ts)
+  {
+    const int64_t elapsedNs = req.now_ts - targetNs;
+    targetNs += (elapsedNs / periodNs + 1) * periodNs;
+  }
+
+  const int64_t deltaNs = targetNs - req.now_ts;
+  timeUntilPhaseUs = static_cast<int>(std::max<int64_t>(
+      0, std::min<int64_t>(deltaNs / NS_PER_US, std::numeric_limits<int>::max())));
+
+  return true;
 }
 
 void aml_reset_audio_from_vs10_change()
@@ -290,6 +452,9 @@ static unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitD
       break;
     case StreamHdrType::HDR_TYPE_DOLBYVISION:
       vs10_mode = aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+      break;
+    case StreamHdrType::HDR_TYPE_HDRVIVID:
+      vs10_mode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
       break;
   }
    
@@ -987,7 +1152,8 @@ void aml_hevc_nal_skip_policy(const int value)
 void aml_set_osd_pq_bypass(StreamHdrType hdrType)
 {
   const bool enable = ((hdrType == StreamHdrType::HDR_TYPE_HDR10) ||
-                       (hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS));
+                       (hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS) ||
+                       (hdrType == StreamHdrType::HDR_TYPE_HDRVIVID));
 
   CSysfsPath("/sys/module/am_vecm/parameters/osd_pq_bypass", enable);
   logM(LOGDEBUG, "AMLUtils", "am_vecm osd_pq_bypass [{}]", enable ? "enabled" : "disabled");

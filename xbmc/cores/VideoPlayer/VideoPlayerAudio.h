@@ -71,6 +71,7 @@ public:
 
   bool IsStalled() const override { return m_stalled;  }
   bool IsPassthrough() const override;
+  void SetAllowPassthrough(bool allow) override;
 
 protected:
 

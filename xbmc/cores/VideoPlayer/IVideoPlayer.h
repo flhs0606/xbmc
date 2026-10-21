@@ -127,6 +127,7 @@ public:
   virtual double GetCurrentPts() = 0;
   bool IsStalled() const override = 0;
   virtual bool IsPassthrough() const = 0;
+  virtual void SetAllowPassthrough(bool allow) {}
   virtual float GetDynamicRangeAmplification() const = 0;
   virtual bool IsEOS() { return false; }
 };

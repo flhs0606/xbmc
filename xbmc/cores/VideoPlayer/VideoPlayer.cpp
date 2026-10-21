@@ -814,6 +814,25 @@ bool CVideoPlayer::OpenInputStream()
 
   if (!m_pInputStream->Open())
   {
+    // For disc images: if Bluray stream fails to open (not a Bluray disc),
+    // fallback to Navigator. This avoids expensive CFileUtils::Exists()
+    // check on udf:// URL in CreateInputStream which opens ISO over NFS (~1s).
+    if (m_item.IsDiscImage())
+    {
+      CLog::Log(LOGDEBUG,
+                "CVideoPlayer::OpenInputStream - Bluray open failed, "
+                "trying Navigator fallback for disc image");
+      m_pInputStream = std::make_shared<CDVDInputStreamNavigator>(this, m_item);
+      if (!m_pInputStream->Open())
+      {
+        CLog::Log(LOGERROR,
+                  "CVideoPlayer::OpenInputStream - error opening Navigator for [{}]",
+                  CURL::GetRedacted(m_item.GetPath()));
+        return false;
+      }
+      return true;
+    }
+
     CLog::Log(LOGERROR, "CVideoPlayer::OpenInputStream - error opening [{}]",
               CURL::GetRedacted(m_item.GetPath()));
     return false;
@@ -1705,7 +1724,7 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
     ProcessAudioID3Data(pStream, pPacket);
   else if (pPacket->isELPackage)
   {
-    CLog::Log(LOGDEBUG, "CVideoPlayer::ProcessPacket packet from enhancement layer: size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms",
+    CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::ProcessPacket packet from enhancement layer: size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms",
       pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0);
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, false));
   }
@@ -3151,10 +3170,11 @@ void CVideoPlayer::HandleMessages()
         pvrinputstream->Pause(speed == 0);
       }
 
-      // do a seek after rewind, clock is not in sync with current pts
-      if ((speed == DVD_PLAYSPEED_NORMAL) &&
-          (m_playSpeed != DVD_PLAYSPEED_NORMAL) &&
-          (m_playSpeed != DVD_PLAYSPEED_PAUSE))
+      const bool isTempoSpeed = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg)->IsTempo();
+      const bool wasFFRW =
+          (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE &&
+           !m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL));
+      if ((speed == DVD_PLAYSPEED_NORMAL || isTempoSpeed) && wasFFRW)
       {
         double iTime = m_VideoPlayerVideo->GetCurrentPts();
         if (iTime == DVD_NOPTS_VALUE)
@@ -3171,7 +3191,7 @@ void CVideoPlayer::HandleMessages()
         m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
       }
 
-      if (std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg)->IsTempo())
+      if (isTempoSpeed)
         m_processInfo->SetTempo(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
       else
         m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
@@ -3326,6 +3346,7 @@ void CVideoPlayer::SetPlaySpeed(int speed)
 {
   if (IsPlaying())
   {
+    UpdateAudioPassthroughForSpeed(static_cast<double>(speed) / DVD_PLAYSPEED_NORMAL);
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, false };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
   }
@@ -3602,6 +3623,16 @@ void CVideoPlayer::SetSubtitleVerticalPosition(int value, bool save)
   m_renderManager.SetSubtitleVerticalPosition(value, save);
 }
 
+void CVideoPlayer::SetDynamicSubtitleOffset(float value)
+{
+  m_renderManager.SetDynamicSubtitleOffset(value);
+}
+
+float CVideoPlayer::AdjustDynamicSubtitleOffset(float delta)
+{
+  return m_renderManager.AdjustDynamicSubtitleOffset(delta);
+}
+
 std::shared_ptr<TextCacheStruct_t> CVideoPlayer::GetTeletextCache()
 {
   if (m_CurrentTeletext.id < 0)
@@ -3721,6 +3752,7 @@ void CVideoPlayer::SetTempo(float tempo)
   tempo = floor(tempo * 100.0f + 0.5f) / 100.0f;
   if (m_processInfo->IsTempoAllowed(tempo))
   {
+    UpdateAudioPassthroughForSpeed(tempo);
     int speed = tempo * DVD_PLAYSPEED_NORMAL;
     CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, true };
     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
@@ -3740,7 +3772,48 @@ void CVideoPlayer::FrameAdvance(int frames)
 
 bool CVideoPlayer::SupportsTempo() const
 {
+  std::unique_lock<CCriticalSection> lock(m_StateSection);
   return m_State.cantempo;
+}
+
+bool CVideoPlayer::CanTempo()
+{
+  auto comp = CServiceBroker::GetSettingsComponent();
+  if (!comp)
+    return true;
+  auto settings = comp->GetSettings();
+  if (!settings)
+    return true;
+
+  if (settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK))
+    return true;
+
+#if defined(HAS_LIBAMCODEC)
+  return true;
+#else
+  return false;
+#endif
+}
+
+void CVideoPlayer::UpdateAudioPassthroughForSpeed(double speed)
+{
+  if (!m_VideoPlayerAudio)
+    return;
+
+  const bool isNonNormalSpeed = (speed != 1.0 && speed != 0.0);
+
+  if (isNonNormalSpeed && m_VideoPlayerAudio->IsPassthrough() && !m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: non-normal speed ({:.2f}x), temporarily disabling passthrough for audio tempo", speed);
+    m_bPassthroughTempFallback = true;
+    m_VideoPlayerAudio->SetAllowPassthrough(false);
+  }
+  else if (!isNonNormalSpeed && m_bPassthroughTempFallback)
+  {
+    CLog::Log(LOGINFO, "CVideoPlayer::UpdateAudioPassthroughForSpeed: returning to normal speed, restoring passthrough");
+    m_bPassthroughTempFallback = false;
+    m_VideoPlayerAudio->SetAllowPassthrough(true);
+  }
 }
 
 bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iStream, int source, bool reset /*= true*/)
@@ -4232,8 +4305,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   m_VideoPlayerAudioID3->Flush();
 
   if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
-      (m_playSpeed >= DVD_PLAYSPEED_NORMAL * m_processInfo->MinTempoPlatform() &&
-       m_playSpeed <= DVD_PLAYSPEED_NORMAL * m_processInfo->MaxTempoPlatform()))
+      m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
   {
     // make sure players are properly flushed, should put them in stalled state
     auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, SYNCSOURCE_AUDIO | SYNCSOURCE_VIDEO);
@@ -5184,7 +5256,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     bool realtime = m_pInputStream->IsRealtime();
 
-    state.cantempo = false;
+    state.cantempo = CanTempo() && !realtime;
 
     m_processInfo->SetStateRealtime(realtime);
   }

@@ -300,6 +300,10 @@ public:
    */
   void SetSubtitleVerticalPosition(const int value, bool save) override;
 
+  void SetDynamicSubtitleOffset(const float value) override;
+
+  float AdjustDynamicSubtitleOffset(float delta) override;
+
   void AddSubtitle(const std::string& strSubPath) override;
 
   int GetAudioStreamCount() const override;
@@ -330,6 +334,8 @@ public:
   void SetSpeed(float speed) override;
   void SetTempo(float tempo) override;
   bool SupportsTempo() const override;
+  virtual bool CanTempo();
+  void UpdateAudioPassthroughForSpeed(double speed);
   void FrameAdvance(int frames) override;
   bool OnAction(const CAction &action) override;
 
@@ -489,6 +495,7 @@ protected:
   bool m_bCloseRequest;
 
   ECacheState  m_caching;
+  bool m_bPassthroughTempFallback{false};
   XbmcThreads::EndTime<> m_cachingTimer;
 
   std::unique_ptr<CProcessInfo> m_processInfo;

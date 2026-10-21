@@ -167,6 +167,9 @@ void aml_reset_from_subtitle_change();
 
 void aml_kodi_reset_cd_cs();
 
+bool aml_get_vsync_edge(int64_t& lastVsyncTs);
+bool aml_get_time_until_vsync_phase_us(int afterVsyncUs, int& timeUntilPhaseUs);
+
 void aml_get_dv_cap();
 struct xbmc_dv_cap
 {

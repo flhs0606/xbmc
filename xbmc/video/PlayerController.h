@@ -10,7 +10,6 @@
 
 #include "guilib/ISliderCallback.h"
 #include "input/actions/interfaces/IActionListener.h"
-#include "utils/MovingSpeed.h"
 
 /*! \brief Player controller class to handle user actions.
 
@@ -52,6 +51,11 @@ private:
    */
   void ShowSlider(int action, int label, float value, float min, float delta, float max, bool modal = false);
 
+  /*!
+   * \brief Persist \p offset as the remembered subtitle offset, but only if the
+   *        remember-offset toggle is enabled. No-op otherwise.
+   */
+  void PersistRememberedOffsetIfEnabled(float offset);
+
   int m_sliderAction = 0; ///< \brief set to the action id for a slider being displayed \sa ShowSlider
-  UTILS::MOVING_SPEED::CMovingSpeed m_movingSpeed;
 };
