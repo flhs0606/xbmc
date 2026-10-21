@@ -86,6 +86,11 @@ namespace WSDiscovery
 class IWSDiscovery;
 }
 
+namespace XFILE
+{
+class CBlurayDiscCache;
+}
+
 namespace KODI
 {
 namespace ADDONS
@@ -206,6 +211,10 @@ public:
   static void UnregisterTextureCache();
   static std::shared_ptr<CTextureCache> GetTextureCache();
 
+  static void RegisterBlurayDiscCache(const std::shared_ptr<XFILE::CBlurayDiscCache>& cache);
+  static void UnregisterBlurayDiscCache();
+  static std::shared_ptr<XFILE::CBlurayDiscCache> GetBlurayDiscCache();
+
   static void RegisterJobManager(const std::shared_ptr<CJobManager>& jobManager);
   static void UnregisterJobManager();
   static std::shared_ptr<CJobManager> GetJobManager();
@@ -237,6 +246,7 @@ private:
   CDecoderFilterManager* m_decoderFilterManager = nullptr;
   std::shared_ptr<CCPUInfo> m_cpuInfo;
   std::shared_ptr<CTextureCache> m_textureCache;
+  std::shared_ptr<XFILE::CBlurayDiscCache> m_blurayDiscCache;
   std::shared_ptr<CJobManager> m_jobManager;
   std::shared_ptr<KODI::MESSAGING::CApplicationMessenger> m_appMessenger;
   std::shared_ptr<KODI::KEYBOARD::CKeyboardLayoutManager> m_keyboardLayoutManager;

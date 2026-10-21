@@ -10,7 +10,6 @@
 #include "cores/VideoPlayer/BDStageTrace.h"
 #include "DVDDemuxers/DemuxStreamSSIF.h"
 
-#include "BlurayIsoCache.h"
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDInputStreamFile.h"
@@ -210,8 +209,19 @@ public:
            "BdCloseWorker::WaitForIdle - 15s timeout, proceeding (worker may be stuck)");
   }
 
+  ~BdCloseWorker()
+  {
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_stopping = true;
+    }
+    m_cv.notify_one();
+    if (m_thread.joinable())
+      m_thread.join();
+  }
+
 private:
-  BdCloseWorker() : m_thread(&BdCloseWorker::Run, this) { m_thread.detach(); }
+  BdCloseWorker() : m_thread(&BdCloseWorker::Run, this) {}
 
   void Run()
   {
@@ -220,7 +230,9 @@ private:
       BLURAY* bd = nullptr;
       {
         std::unique_lock<std::mutex> lock(m_mutex);
-        m_cv.wait(lock, [this] { return !m_queue.empty(); });
+        m_cv.wait(lock, [this] { return m_stopping || !m_queue.empty(); });
+        if (m_queue.empty())
+          return;
         bd = m_queue.front();
         m_queue.pop();
         m_busy = true;
@@ -251,16 +263,9 @@ private:
   std::condition_variable m_idleCv;
   std::queue<BLURAY*> m_queue;
   bool m_busy{false};
+  bool m_stopping{false};
   std::thread m_thread;
 };
-}
-
-static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
-{
-  auto blurayStream = reinterpret_cast<CDVDInputStreamBluray*>(handle);
-  if (!blurayStream)
-    return -1;
-  return blurayStream->ReadBlocks(reinterpret_cast<uint8_t*>(buf), lba, num_blocks);
 }
 
 static void bluray_overlay_cb(void *this_gen, const BD_OVERLAY * ov)
@@ -312,9 +317,37 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFromState(const std::string& x
   return bd_get_playlist_info(m_bd, blurayState.playlistId, 0);
 }
 
-BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest() const
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetMainTitle() const
 {
   int titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
+  if (titles <= 0)
+    return nullptr;
+
+  // Prefer libbluray's native heuristic algorithm:
+  // Evaluates chapter count, HD audio properties (TrueHD/Atmos/DTS-HD MA), video properties,
+  // and filters out ScreenPass fake playlist traps.
+  int mainTitleIdx = bd_get_main_title(m_bd);
+  if (mainTitleIdx >= 0 && mainTitleIdx < titles)
+  {
+    BLURAY_TITLE_INFO* info = bd_get_title_info(m_bd, mainTitleIdx, 0);
+    if (info)
+    {
+      logComponentM(LOGDEBUG, LOGBLURAY,
+                    "CDVDInputStreamBluray::GetMainTitle - selected main title {} (idx {}) via bd_get_main_title",
+                    info->playlist, mainTitleIdx);
+      return info;
+    }
+  }
+
+  logComponentM(LOGDEBUG, LOGBLURAY,
+                "CDVDInputStreamBluray::GetMainTitle - bd_get_main_title unavailable, falling back to GetTitleLongest");
+  return GetTitleLongest(titles);
+}
+
+BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleLongest(int titles) const
+{
+  if (titles < 0)
+    titles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
   
   BLURAY_TITLE_INFO* s = nullptr;
   for (int i = 0; i < titles; i++)
@@ -459,7 +492,6 @@ bool CDVDInputStreamBluray::Open()
   std::string filename;
   std::string root;
 
-  bool openStream = false;
   bool openDisc = false;
   bool resumable = true;
 
@@ -470,40 +502,39 @@ bool CDVDInputStreamBluray::Open()
     root = url.GetHostName();
     filename = URIUtils::GetFileName(url.GetFileName());
 
-    // Check whether disc is AACS protected
+    // Disc images mounted via udf:// must always use files mode (bd_open_files),
+    // as bd_open_disc only supports local physical drive devices and cannot handle udf:// URLs.
+    // Furthermore, probing IsProtectedBlurayDisc on a stripped ISO path triggers false-positive
+    // HTTP 200 responses from streaming proxies (such as emby-next-gen).
     CURL url2(root);
-    CFileItem item(url2, false);
-    if (url2.IsProtocol("udf"))
-      item.SetPath(url2.GetHostName());
-    openDisc = item.IsProtectedBlurayDisc();
+    if (!url2.IsProtocol("udf") && !URIUtils::IsRemote(root))
+    {
+      CFileItem item(url2, false);
+      openDisc = item.IsProtectedBlurayDisc();
+    }
 
     // check for a menu call for an image file
     if (StringUtils::EqualsNoCase(filename, "menu"))
     {
       resumable = false;
 
-      if (item.IsDiscImage())
-      {
-        if (!OpenStream(item))
-          return false;
-
-        openStream = true;
-      }
+      // A menu on a disc image is opened below in files mode like any other disc: root already
+      // names the image, and a menu on a BDMV folder has always been read that way.
     }
   }
   else if (m_item.IsDiscImage())
   {
+    // Read the image through Kodi's filesystem rather than streaming raw 2048-byte blocks.
+    // Stream mode reads through a file opened READ_NO_CACHE, so every block libbluray asks for
+    // becomes its own request to the source, and it shares nothing with the cache the directory
+    // above read the same image through. The dynamic path is the resolved one, so a .strm
+    // pointing at an image reaches the image itself rather than the .strm.
     CURL url2("udf://");
 
-    url2.SetHostName(m_item.GetPath());
+    url2.SetHostName(m_item.GetDynPath());
     root = url2.Get();
-
-    if (!OpenStream(m_item))
-      return false;
-
-    openStream = true;
   }
-  else if (m_item.IsProtectedBlurayDisc())
+  else if (!URIUtils::IsRemote(m_item.GetDynPath()) && m_item.IsProtectedBlurayDisc())
   {
     openDisc = true;
   }
@@ -545,16 +576,7 @@ bool CDVDInputStreamBluray::Open()
 
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Open - opening {}", CURL::GetRedacted(root));
 
-  if (openStream)
-  {
-    if (!bd_open_stream(m_bd, this, read_blocks))
-    {
-      CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in stream mode",
-                CURL::GetRedacted(root));
-      return false;
-    }
-  }
-  else if (openDisc)
+  if (openDisc)
   {
     // This special case is required for opening original AACS protected Blu-ray discs. Otherwise
     // things like Bus Encryption might not be handled properly and playback will fail.
@@ -569,6 +591,15 @@ bool CDVDInputStreamBluray::Open()
   else
   {
     m_rootPath = root;
+
+#if defined(HAS_UDFREAD)
+    // Only in files mode does libbluray reach the disc through Kodi's filesystem, opening a dozen
+    // or so files and directories on it, and then the clips as they play. On a disc image each of
+    // those opens would otherwise re-mount the image's UDF volume, so keep it mounted for as long
+    // as the disc is open. (Stream mode reads the image itself, disc mode is a physical disc.)
+    m_udfMount.emplace(root);
+#endif
+
     if (!bd_open_files(m_bd, &m_rootPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in files mode",
@@ -645,7 +676,6 @@ bool CDVDInputStreamBluray::Open()
     return false;
   }
 
-  m_nTitles = bd_get_titles(m_bd, TITLES_RELEVANT, 0);
   int mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_DISC_PLAYBACK);
 
   if (URIUtils::HasExtension(filename, ".mpls"))
@@ -653,15 +683,15 @@ bool CDVDInputStreamBluray::Open()
     m_navmode = false;
     ReplaceTitleInfo(GetTitleFile(filename));
   }
-  else if (mode == BD_PLAYBACK_MAIN_TITLE)
-  {
-    m_navmode = false;
-    ReplaceTitleInfo(GetTitleLongest());
-  }
   else if (resumable && m_item.GetStartOffset() == STARTOFFSET_RESUME && m_item.IsResumable())
   {
     m_navmode = false;
     ReplaceTitleInfo(GetTitleFromState(m_item.GetVideoInfoTag()->GetResumePoint().playerState));
+  }
+  else if (mode == BD_PLAYBACK_MAIN_TITLE)
+  {
+    m_navmode = false;
+    ReplaceTitleInfo(GetMainTitle());
   }
   else
   {
@@ -677,7 +707,7 @@ bool CDVDInputStreamBluray::Open()
     }
 
     if(!m_navmode)
-      ReplaceTitleInfo(GetTitleLongest());
+      ReplaceTitleInfo(GetMainTitle());
   }
 
   UpdateGraphicsRegime();
@@ -764,22 +794,6 @@ void CDVDInputStreamBluray::Close()
     m_pendingOverlayGroup.reset();
   }
 
-  if (m_isoCacheFallbacks > 0)
-  {
-    logM(LOGDEBUG, "CDVDInputStreamBluray::Close - ISO cache fallbacks {}",
-         m_isoCacheFallbacks.load());
-  }
-
-  {
-    std::shared_ptr<CBlurayIsoCache> cache;
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      cache = std::move(m_isoCache);
-    }
-    if (cache)
-      cache->Stop();
-  }
-
   if(m_bd)
   {
     bd_register_overlay_proc(m_bd, nullptr, nullptr);
@@ -792,7 +806,6 @@ void CDVDInputStreamBluray::Close()
 
   aml_set_bdj_overlay_active(false);
 
-  m_pstream.reset();
   m_rootPath.clear();
 }
 
@@ -996,11 +1009,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
   case BD_EVENT_SEEK:
     logComponentM(LOGDEBUG, LOGBLURAY, "CDVDInputStreamBluray - BD_EVENT_SEEK");
     ResetSeamTimeOffset("seek");
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      if (m_isoCache)
-        m_isoCache->ResetAccessPattern();
-    }
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
     //m_hold = HOLD_HELD;
@@ -1069,11 +1077,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
   {
     UpdateLibblurayDebugMask();
     logComponentM(LOGDEBUG, LOGBLURAY, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      if (m_isoCache)
-        m_isoCache->ResetAccessPattern();
-    }
     const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
 
     ApplyUHDCapabilities();
@@ -1126,11 +1129,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
     BDSTAGE::Playlist(static_cast<int>(m_event.param), m_menu);
     if (m_overlayCloseDeferred && m_event.param != m_playlist)
       OverlayClose();
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      if (m_isoCache)
-        m_isoCache->ResetAccessPattern();
-    }
     if (m_event.param == m_playlist && m_titleInfo)
     {
       logComponentM(LOGDEBUG, LOGBLURAY,
@@ -1144,11 +1142,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_PLAYITEM:
     logComponentM(LOGDEBUG, LOGBLURAY, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      if (m_isoCache)
-        m_isoCache->ResetAccessPattern();
-    }
     {
       std::lock_guard<std::mutex> lock(m_clipTableMutex);
       if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
@@ -1602,82 +1595,11 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
     while (bd_get_event(m_bd, &m_event))
       ProcessEvent();
   }
-  return result;
-}
-
-int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
-{
-  std::shared_ptr<CBlurayIsoCache> cache;
-  {
-    std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-    cache = m_isoCache;
-  }
-  if (cache)
-  {
-    const int result = cache->ReadBlocks(buf, lba, num_blocks);
-    if (result >= 0)
-      return result;
-
-    ++m_isoCacheFallbacks;
-    if (m_isoCacheFallbacks <= 3 || (m_isoCacheFallbacks & (m_isoCacheFallbacks - 1)) == 0)
-    {
-      logComponentM(LOGDEBUG, LOGBLURAY,
-                    "CDVDInputStreamBluray::ReadBlocks - cached read failed at lba {} blocks {}, falling back ({})",
-                    lba, num_blocks, m_isoCacheFallbacks.load());
-    }
-  }
-
-  return ReadBlocksDirect(buf, lba, num_blocks);
-}
-
-int CDVDInputStreamBluray::ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks)
-{
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream)
-    return -1;
-
-  int result = -1;
-  int64_t offset = static_cast<int64_t>(lba) * 2048;
-
-  std::lock_guard lock(m_readBlocksLock);
-
-  if (lpstream->Seek(offset, SEEK_SET) >= 0)
-  {
-    int64_t size = static_cast<int64_t>(num_blocks) * 2048;
-    if (size <= std::numeric_limits<int>::max())
-      result = lpstream->Read(buf, static_cast<int>(size)) / 2048;
-  }
 
   return result;
 }
 
-int64_t CDVDInputStreamBluray::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
-{
-  CDVDInputStreamFile* lpstream = m_pstream.get();
-  if (!lpstream || !buffer || size == 0)
-    return -1;
 
-  if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
-    return -1;
-
-  std::lock_guard lock(m_readBlocksLock);
-
-  if (lpstream->Seek(offset, SEEK_SET) < 0)
-    return -1;
-
-  size_t totalRead = 0;
-  while (totalRead < size)
-  {
-    int chunk = lpstream->Read(buffer + totalRead, static_cast<int>(size - totalRead));
-    if (chunk < 0)
-      return -1;
-    if (chunk == 0)
-      break;
-    totalRead += static_cast<size_t>(chunk);
-  }
-
-  return static_cast<int64_t>(totalRead > 0 ? totalRead : -1);
-}
 
 static uint8_t  clamp(double v)
 {
@@ -2646,6 +2568,7 @@ bool CDVDInputStreamBluray::CanSeek()
   return !IsInMenu() || !m_isInMainMenu;
 }
 
+
 MenuType CDVDInputStreamBluray::GetSupportedMenuType()
 {
   if (m_navmode)
@@ -2995,58 +2918,6 @@ void CDVDInputStreamBluray::ApplyAudioCapability() const
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_AUDIO_CAP, acap);
 }
 
-bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
-{
-  logM(LOGINFO, "CDVDInputStreamBluray::OpenStream - opening ISO stream for {}",
-       CURL::GetRedacted(item.GetPath()));
-
-  {
-    std::shared_ptr<CBlurayIsoCache> cache;
-    {
-      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
-      cache = std::move(m_isoCache);
-    }
-    if (cache)
-      cache->Stop();
-  }
-
-  m_isoCacheFallbacks = 0;
-
-  m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
-                                                              READ_CHUNKED | READ_NO_CACHE);
-
-  if (!m_pstream->Open())
-  {
-    CLog::Log(LOGERROR, "Error opening image file {}", CURL::GetRedacted(item.GetPath()));
-    Close();
-    return false;
-  }
-
-  const int64_t sourceLength = m_pstream->GetLength();
-  if (sourceLength > 0)
-  {
-    const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-    CBlurayIsoCache::Config cacheConfig{};
-    cacheConfig.pageSize = adv->m_blurayIsoCachePageSize;
-    cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
-    cacheConfig.forwardPrefetchPages = adv->m_blurayIsoCacheForwardPrefetchPages;
-
-    logM(LOGINFO, "CDVDInputStreamBluray::OpenStream - enable Bluray ISO cache for {} ({} bytes)",
-         CURL::GetRedacted(item.GetPath()), sourceLength);
-    m_isoCache = std::make_shared<CBlurayIsoCache>(
-        sourceLength,
-        [this](int64_t offset, uint8_t* buffer, size_t size) { return ReadRaw(offset, buffer, size); },
-        cacheConfig);
-    m_isoCache->Start();
-  }
-  else
-  {
-    logM(LOGINFO, "CDVDInputStreamBluray::OpenStream - skip ISO cache, source length {}",
-         sourceLength);
-  }
-
-  return true;
-}
 
 bool CDVDInputStreamBluray::GetState(std::string& xmlstate)
 {

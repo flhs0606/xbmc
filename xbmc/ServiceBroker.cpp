@@ -12,6 +12,7 @@
 #include "application/Application.h"
 #include "profiles/ProfileManager.h"
 #include "settings/SettingsComponent.h"
+#include "filesystem/BlurayDiscCache.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
@@ -379,6 +380,22 @@ void CServiceBroker::UnregisterTextureCache()
 std::shared_ptr<CTextureCache> CServiceBroker::GetTextureCache()
 {
   return g_serviceBroker.m_textureCache;
+}
+
+void CServiceBroker::RegisterBlurayDiscCache(
+    const std::shared_ptr<XFILE::CBlurayDiscCache>& cache)
+{
+  g_serviceBroker.m_blurayDiscCache = cache;
+}
+
+void CServiceBroker::UnregisterBlurayDiscCache()
+{
+  g_serviceBroker.m_blurayDiscCache.reset();
+}
+
+std::shared_ptr<XFILE::CBlurayDiscCache> CServiceBroker::GetBlurayDiscCache()
+{
+  return g_serviceBroker.m_blurayDiscCache;
 }
 
 void CServiceBroker::RegisterJobManager(const std::shared_ptr<CJobManager>& jobManager)

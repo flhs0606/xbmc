@@ -284,14 +284,16 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
     if (!(m_flags & READ_NO_CACHE))
     {
       const std::string pathToUrl(url.Get());
+
       if (URIUtils::IsDVD(pathToUrl) || URIUtils::IsBluray(pathToUrl) ||
           (m_flags & READ_AUDIO_VIDEO))
       {
-        const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+        const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+        const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
 
-        const int cacheBufferMode = (settings)
-                                        ? settings->GetInt(CSettings::SETTING_FILECACHE_BUFFERMODE)
-                                        : CACHE_BUFFER_MODE_NETWORK;
+        const int cacheBufferMode =
+            (settings) ? settings->GetInt(CSettings::SETTING_FILECACHE_BUFFERMODE)
+                       : CACHE_BUFFER_MODE_NETWORK;
 
         if ((cacheBufferMode == CACHE_BUFFER_MODE_INTERNET &&
              URIUtils::IsInternetStream(pathToUrl, true)) ||

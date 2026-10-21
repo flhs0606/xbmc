@@ -133,9 +133,11 @@ endif()
 
 if(TARGET udfread::udfread)
   list(APPEND SOURCES UDFBlockInput.cpp
+                      UDFContext.cpp
                       UDFDirectory.cpp
                       UDFFile.cpp)
   list(APPEND HEADERS UDFBlockInput.h
+                      UDFContext.h
                       UDFDirectory.h
                       UDFFile.h)
 endif()
@@ -143,10 +145,36 @@ endif()
 if(BLURAY_FOUND)
   list(APPEND SOURCES BlurayCallback.cpp
                       BlurayDirectory.cpp
-                      BlurayFile.cpp)
+                      BlurayDiscCache.cpp
+                      BlurayFile.cpp
+                      DiscDirectoryHelper.cpp
+                      bluray/M2TSParser.cpp
+                      bluray/MPLSParser.cpp
+                      bluray/StreamParser.cpp)
   list(APPEND HEADERS BlurayCallback.h
                       BlurayDirectory.h
-                      BlurayFile.h)
+                      BlurayDiscCache.h
+                      BlurayFile.h
+                      DiscDirectoryHelper.h
+                      bluray/BitReader.h
+                      bluray/M2TSParser.h
+                      bluray/MPLSParser.h
+                      bluray/PlaylistStructure.h
+                      bluray/StreamParser.h)
+endif()
+
+# The v22-derived bluray files need C++20 (std::span, std::ranges, std::erase_if,
+# std::popcount); the rest of Kodi stays on C++17. The source-file CXX_STANDARD
+# property does not achieve this - the target already requests C++17 and CMake
+# emits only that -std, so the flag is appended per source instead.
+if(BLURAY_FOUND)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/BlurayDirectory.cpp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/BlurayDiscCache.cpp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/DiscDirectoryHelper.cpp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/bluray/M2TSParser.cpp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/bluray/MPLSParser.cpp
+                              ${CMAKE_CURRENT_SOURCE_DIR}/bluray/StreamParser.cpp
+                              PROPERTIES COMPILE_OPTIONS "-std=gnu++20")
 endif()
 
 if(ENABLE_OPTICAL)

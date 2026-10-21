@@ -54,6 +54,8 @@ bool CEdl::ReadEditDecisionLists(const CFileItem& fileItem, const float fFramesP
    * network share (even if from a different private network).
    */
   const std::string& strMovie = fileItem.GetDynPath();
+  if (URIUtils::IsBluray(strMovie))
+    return false;
   if ((URIUtils::IsHD(strMovie) || URIUtils::IsOnLAN(strMovie, LanCheckMode::ANY_PRIVATE_SUBNET)) &&
       !URIUtils::IsInternetStream(strMovie))
   {
@@ -93,6 +95,9 @@ bool CEdl::ReadEditDecisionLists(const CFileItem& fileItem, const float fFramesP
 bool CEdl::ReadEdl(const std::string& strMovie, const float fFramesPerSecond)
 {
   Clear();
+  if (URIUtils::IsBluray(strMovie))
+    return false;
+
 
   std::string edlFilename(URIUtils::ReplaceExtension(strMovie, ".edl"));
   if (!CFile::Exists(edlFilename))
@@ -286,6 +291,9 @@ bool CEdl::ReadEdl(const std::string& strMovie, const float fFramesPerSecond)
 bool CEdl::ReadComskip(const std::string& strMovie, const float fFramesPerSecond)
 {
   Clear();
+  if (URIUtils::IsBluray(strMovie))
+    return false;
+
 
   std::string comskipFilename(URIUtils::ReplaceExtension(strMovie, ".txt"));
   if (!CFile::Exists(comskipFilename))
@@ -380,6 +388,9 @@ bool CEdl::ReadComskip(const std::string& strMovie, const float fFramesPerSecond
 
 bool CEdl::ReadVideoReDo(const std::string& strMovie)
 {
+  if (URIUtils::IsBluray(strMovie))
+    return false;
+
   /*
    * VideoReDo file is strange. Tags are XML like, but it isn't an XML file.
    *
@@ -479,6 +490,9 @@ bool CEdl::ReadVideoReDo(const std::string& strMovie)
 bool CEdl::ReadBeyondTV(const std::string& strMovie)
 {
   Clear();
+  if (URIUtils::IsBluray(strMovie))
+    return false;
+
 
   std::string beyondTVFilename(URIUtils::ReplaceExtension(strMovie, URIUtils::GetExtension(strMovie) + ".chapters.xml"));
   if (!CFile::Exists(beyondTVFilename))

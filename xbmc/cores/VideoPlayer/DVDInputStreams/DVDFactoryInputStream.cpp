@@ -30,6 +30,7 @@
 #include "filesystem/CurlFile.h"
 #include "filesystem/IFileTypes.h"
 #include "storage/MediaManager.h"
+#include "utils/DiscsUtils.h"
 #include "utils/FileUtils.h"
 #include "utils/URIUtils.h"
 
@@ -74,14 +75,7 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
   if (fileitem.IsDiscImage())
   {
 #ifdef HAVE_LIBBLURAY
-    CURL url("udf://");
-    url.SetHostName(file);
-    url.SetFileName("BDMV/index.bdmv");
-    if (CFileUtils::Exists(url.Get()))
-      return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
-    url.SetHostName(file);
-    url.SetFileName("BDMV/INDEX.BDM");
-    if (CFileUtils::Exists(url.Get()))
+    if (UTILS::DISCS::IsBlurayDiscImage(fileitem))
       return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
 #endif
 
@@ -110,7 +104,7 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
 #ifdef HAVE_LIBBLURAY
   else if (fileitem.IsType(".bdmv") || fileitem.IsType(".mpls")
           || fileitem.IsType(".bdm") || fileitem.IsType(".mpl")
-          || StringUtils::StartsWithNoCase(file, "bluray:"))
+          || URIUtils::IsBlurayPath(file) || URIUtils::IsBlurayPath(fileitem.GetPath()))
     return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
 #endif
   else if (StringUtils::StartsWithNoCase(file, "rtp://") ||
@@ -163,6 +157,16 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
           delete pRedirectEx;
         }
       }
+    }
+
+    // Re-check whether resolved URL or hint indicates a disc image
+    if (finalFileitem.IsDiscImage())
+    {
+#ifdef HAVE_LIBBLURAY
+      if (UTILS::DISCS::IsBlurayDiscImage(finalFileitem))
+        return std::make_shared<CDVDInputStreamBluray>(pPlayer, finalFileitem);
+#endif
+      return std::make_shared<CDVDInputStreamNavigator>(pPlayer, finalFileitem);
     }
 
     if (finalFileitem.IsType(".m3u8"))

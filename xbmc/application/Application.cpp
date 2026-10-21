@@ -25,6 +25,11 @@
 #include "ServiceBroker.h"
 #include "ServiceManager.h"
 #include "TextureCache.h"
+#include "filesystem/BlurayDiscCache.h"
+#include "filesystem/CurlFile.h"
+#include "filesystem/DiscDirectoryHelper.h"
+#include "settings/DiscSettings.h"
+#include "utils/DiscsUtils.h"
 #include "URL.h"
 #include "Util.h"
 #include "addons/AddonManager.h"
@@ -792,6 +797,7 @@ bool CApplication::Initialize()
     }
 
     CServiceBroker::RegisterTextureCache(std::make_shared<CTextureCache>());
+    CServiceBroker::RegisterBlurayDiscCache(std::make_shared<XFILE::CBlurayDiscCache>());
 
     std::string skinId = settings->GetString(CSettings::SETTING_LOOKANDFEEL_SKIN);
     if (!skinHandling->LoadSkin(skinId))
@@ -2139,6 +2145,7 @@ bool CApplication::Cleanup()
     CLog::Log(LOGINFO, "unload skin");
     GetComponent<CApplicationSkinHandling>()->UnloadSkin();
 
+    CServiceBroker::UnregisterBlurayDiscCache();
     CServiceBroker::UnregisterTextureCache();
 
     // stop all remaining scripts; must be done after skin has been unloaded,
@@ -2525,6 +2532,128 @@ bool CApplication::PlayStack(CFileItem& item, bool bRestart)
   return PlayFile(selectedStackPart, "", true);
 }
 
+namespace
+{
+void DetectHttpDiscImageForPlayback(CFileItem& item)
+{
+  if (item.HasProperty("httpurl.disc_image") || !item.IsInternetStream(true))
+    return;
+
+  // Fast skip: already a disc image, or PVR / live streams / disabled lookup
+  if (item.IsDiscImage() || item.IsPVR() || item.IsLiveTV() || !item.ContentLookup())
+    return;
+
+  // Fast skip: clearly a normal video container by standard video extensions
+  if (URIUtils::HasExtension(item.GetDynPath(),
+                             CServiceBroker::GetFileExtensionProvider().GetVideoExtensions()))
+    return;
+
+  // Probe redirects using CCurlFile with a short connect timeout
+  try
+  {
+    XFILE::CCurlFile curlFile;
+    curlFile.SetTimeout(5);
+    CURL url(item.GetDynURL());
+    if (curlFile.Open(url))
+    {
+      const std::string effectiveUrl = curlFile.GetURL();
+      const std::string mime = curlFile.GetHttpHeader().GetMimeType();
+      const bool isDisc = URIUtils::IsDiscImage(effectiveUrl) ||
+                          mime == "application/x-iso9660-image" ||
+                          mime == "application/x-cd-image";
+      if (isDisc)
+      {
+        CLog::LogF(LOGINFO, "HTTP ISO pre-detection: identified disc image via redirect to {}",
+                   CURL::GetRedacted(effectiveUrl));
+        item.SetProperty("httpurl.disc_image", true);
+      }
+      curlFile.Close();
+    }
+  }
+  catch (...)
+  {
+    // Ignore network probe failures; playback will proceed through standard path
+  }
+}
+
+XFILE::MenuDecision GetMenuDecisions(const CFileItem& item, const CPlayerOptions& options)
+{
+  using XFILE::MenuDecision;
+
+  // Evaluate cheap in-memory path checks first to avoid unnecessary disk/network I/O
+  const bool isBlurayPath{URIUtils::IsBlurayPath(item.GetDynPath())};
+  const bool isBluray{!isBlurayPath && (item.IsBDFile() || ::UTILS::DISCS::IsBlurayDiscImage(item))};
+
+  if (!isBluray && !isBlurayPath)
+    return MenuDecision::NO_ACTION;
+
+  const int playbackSetting{CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+      CSettings::SETTING_DISC_PLAYBACK)};
+  const bool atStart{options.startpercent == 0.0 && options.starttime == 0.0};
+
+  // See if choose (new) playlist has been selected from context menu
+  const bool forceSelectionAlways{item.GetProperty("force_playlist_selection").asBoolean(false)};
+  if (forceSelectionAlways && isBlurayPath)
+    return MenuDecision::SHOW_SIMPLE_MENU;
+
+  if (atStart)
+  {
+    if (playbackSetting == BD_PLAYBACK_DISC_MENU)
+      return MenuDecision::SHOW_DISC_MENU;
+
+    // Direct to player without application-layer MPLS enumeration:
+    // When "Play main title" is chosen, skip CDiscDirectoryHelper/CBlurayDirectory directory parsing.
+    // CDVDInputStreamBluray directly opens the disc and selects the main title via libbluray.
+    if (playbackSetting == BD_PLAYBACK_MAIN_TITLE && !forceSelectionAlways)
+      return MenuDecision::NO_ACTION;
+
+    if (playbackSetting == BD_PLAYBACK_AUTO && isBluray)
+      return MenuDecision::AUTO;
+
+    // For bare Blu-ray discs (ISO or BDMV), show the simple menu for SIMPLE_MENU
+    if (isBluray)
+      return MenuDecision::SHOW_SIMPLE_MENU;
+
+    // If a playlist is already set, only show simple menu if explicitly forced by SIMPLE_MENU setting
+    if (playbackSetting == BD_PLAYBACK_SIMPLE_MENU && isBlurayPath)
+      return MenuDecision::SHOW_SIMPLE_MENU;
+  }
+
+  return MenuDecision::NO_ACTION;
+}
+
+bool GetPlaylistIfDisc(CFileItem& item, CPlayerOptions& options)
+{
+  using XFILE::MenuDecision;
+  const MenuDecision menuDecision{GetMenuDecisions(item, options)};
+  switch (menuDecision)
+  {
+    case MenuDecision::SHOW_DISC_MENU:
+    {
+      item.SetDynPath(URIUtils::GetBlurayMenuPath(item.GetDynPath(), item.IsDiscImage()));
+      break;
+    }
+    case MenuDecision::SHOW_SIMPLE_MENU:
+    case MenuDecision::AUTO:
+    case MenuDecision::GET_MAIN_TITLE:
+    case MenuDecision::SILENT:
+    {
+      if (!XFILE::CDiscDirectoryHelper::GetOrShowPlaylistSelection(item, menuDecision))
+        return false; // User cancelled
+
+      // Reset any resume state as new playlist chosen
+      options.starttime = options.startpercent = 0.0;
+      options.state.clear();
+      break;
+    }
+    case MenuDecision::NO_ACTION:
+    default:
+      break;
+  }
+  return true;
+}
+} // namespace
+
 bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRestart)
 {
   // Ensure the MIME type has been retrieved for http:// and shout:// streams
@@ -2560,6 +2689,9 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
   {
     return false;
   }
+
+  // Pre-detect disc image for HTTP/HTTPS streams without extension or behind 302 redirects
+  DetectHttpDiscImageForPlayback(item);
 
   // if we have a stacked set of files, we need to setup our stack routines for
   // "seamless" seeking and total time of the movie etc.
@@ -2665,25 +2797,24 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
 
   // a disc image might be Blu-Ray disc
   if (!(options.startpercent > 0.0 || options.starttime > 0.0) &&
-      (item.IsBDFile() || item.IsDiscImage()))
+      (item.IsBDFile() || item.IsDiscImage() || URIUtils::IsBlurayPath(item.GetDynPath())))
   {
     // No video selection when using external or remote players (they handle it if supported)
-    const bool isSimpleMenuAllowed = [&]()
+    const bool isPlaybackAllowed = [&]()
     {
-      const std::string defaulPlayer{
+      const std::string defaultPlayer{
           player.empty() ? m_ServiceManager->GetPlayerCoreFactory().GetDefaultPlayer(item)
                          : player};
       const bool isExternalPlayer{
-          m_ServiceManager->GetPlayerCoreFactory().IsExternalPlayer(defaulPlayer)};
+          m_ServiceManager->GetPlayerCoreFactory().IsExternalPlayer(defaultPlayer)};
       const bool isRemotePlayer{
-          m_ServiceManager->GetPlayerCoreFactory().IsRemotePlayer(defaulPlayer)};
+          m_ServiceManager->GetPlayerCoreFactory().IsRemotePlayer(defaultPlayer)};
       return !isExternalPlayer && !isRemotePlayer;
     }();
 
-    if (isSimpleMenuAllowed)
+    if (isPlaybackAllowed)
     {
-      // Check if we must show the simplified bd menu.
-      if (!CGUIDialogSimpleMenu::ShowPlaySelection(item))
+      if (!GetPlaylistIfDisc(item, options))
         return true;
     }
   }

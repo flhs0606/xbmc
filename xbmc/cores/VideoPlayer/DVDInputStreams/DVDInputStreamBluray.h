@@ -9,6 +9,9 @@
 #pragma once
 
 #include "BlurayStateSerializer.h"
+#if defined(HAS_UDFREAD)
+#include "filesystem/UDFContext.h"
+#endif
 #include "DVDInputStream.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 
@@ -17,6 +20,7 @@
 #include <chrono>
 #include <list>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -32,7 +36,6 @@ extern "C"
 #include <libbluray/keys.h>
 #include <libbluray/overlay.h>
 #include <libbluray/player_settings.h>
-#include "DVDInputStreamFile.h"
 }
 
 #define MAX_PLAYLIST_ID 99999
@@ -52,7 +55,6 @@ extern "C"
 #define HDMV_PID_IG_FIRST         0x1400
 #define HDMV_PID_IG_LAST          0x141f
 
-class CBlurayIsoCache;
 class CDVDOverlayImage;
 class IVideoPlayer;
 class CDVDDemux;
@@ -72,7 +74,6 @@ public:
   bool Open() override;
   void Close() override;
   int Read(uint8_t* buf, int buf_size) override;
-  int ReadBlocks(uint8_t* buf, int lba, int num_blocks);
   int64_t Seek(int64_t offset, int whence) override;
   void Abort() override;
   bool IsEOF() override;
@@ -113,6 +114,7 @@ public:
    * \return The supported menu type
   */
   MenuType GetSupportedMenuType() override;
+
 
   bool IsInMenu() override;
   bool IsMenuDomainSegment() const;
@@ -175,7 +177,8 @@ public:
 #endif
 
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate) const;
-  BLURAY_TITLE_INFO* GetTitleLongest() const;
+  BLURAY_TITLE_INFO* GetMainTitle() const;
+  BLURAY_TITLE_INFO* GetTitleLongest(int titles = -1) const;
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name) const;
 
   void ProcessEvent();
@@ -295,7 +298,6 @@ protected:
   uint32_t m_vmDiagPlaneMax = 0;
   std::chrono::steady_clock::time_point m_vmDiagPlaylistEnter{};
   int m_vmDiagPlaylist = -1;
-  int                 m_nTitles = -1;
   std::string         m_root;
 
   // MVC related members
@@ -349,23 +351,19 @@ protected:
 #endif
 
   private:
-    bool OpenStream(CFileItem &item);
-    int ReadBlocksDirect(uint8_t* buf, int lba, int num_blocks);
-    int64_t ReadRaw(int64_t offset, uint8_t* buffer, size_t size);
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;
     void ApplyAudioCapability() const;
     void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
-    std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 
     /*! Bluray state serializer handler */
     CBlurayStateSerializer m_blurayStateSerializer;
 
-    /* used during bd_open_stream read block*/
-    CCriticalSection m_readBlocksLock;
-    std::atomic<unsigned int> m_isoCacheFallbacks{0};
-    std::mutex m_isoCacheMutex;
-    std::shared_ptr<CBlurayIsoCache> m_isoCache;
+
+#if defined(HAS_UDFREAD)
+    //! Keeps a disc image's UDF volume mounted for as long as the disc is open
+    std::optional<XFILE::CUDFMount> m_udfMount;
+#endif
 };
