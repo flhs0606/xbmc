@@ -10,11 +10,15 @@
 #include "File.h"
 #include "FileItem.h"
 #include "LangInfo.h"
+#include "ServiceBroker.h"
 #include "URL.h"
+#include "BlurayIsoSession.h"
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/Directory.h"
 #include "filesystem/DirectoryFactory.h"
 #include "guilib/LocalizeStrings.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/RegExp.h"
 #include "utils/StringUtils.h"
@@ -46,10 +50,27 @@ CBlurayDirectory::~CBlurayDirectory()
 
 void CBlurayDirectory::Dispose()
 {
+  m_disposing.store(true, std::memory_order_release);
+
+  {
+    std::shared_ptr<CBlurayIsoSession> cache;
+    {
+      std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+      cache = std::move(m_isoCache);
+    }
+    if (cache)
+      cache->Stop();
+  }
+
   if(m_bd)
   {
     bd_close(m_bd);
     m_bd = nullptr;
+  }
+
+  {
+    std::lock_guard lock(m_isoReadLock);
+    m_isoFile.reset();
   }
 }
 
@@ -252,6 +273,8 @@ CURL CBlurayDirectory::GetUnderlyingCURL(const CURL& url)
 
 bool CBlurayDirectory::InitializeBluray(const std::string &root)
 {
+  m_disposing.store(false, std::memory_order_release);
+
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
   bd_set_debug_mask(DBG_CRIT | DBG_BLURAY | DBG_NAV);
 
@@ -273,11 +296,71 @@ bool CBlurayDirectory::InitializeBluray(const std::string &root)
   if (fileHandler)
     m_realPath = fileHandler->ResolveMountPoint(root);
 
-  if (!bd_open_files(m_bd, &m_realPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
+  // Check if the root is a disc image (ISO) and use stream mode with LRU cache
+  CURL rootUrl(root);
+  bool isDiscImage = false;
+  std::string isoPath;
+
+  if (rootUrl.IsProtocol("udf"))
   {
-    CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {}",
-              CURL::GetRedacted(root));
-    return false;
+    isoPath = rootUrl.GetHostName();
+    CFileItem isoItem(isoPath, false);
+    isDiscImage = isoItem.IsDiscImage();
+  }
+
+  if (isDiscImage)
+  {
+    m_isoFile = std::make_shared<CFile>();
+    if (!m_isoFile->Open(isoPath))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open ISO file {}",
+                CURL::GetRedacted(isoPath));
+      return false;
+    }
+
+    const int64_t sourceLength = m_isoFile->GetLength();
+    if (sourceLength > 0)
+    {
+      const auto adv = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+      CBlurayIsoSession::Config cacheConfig{};
+      cacheConfig.blockSize = adv->m_blurayIsoCacheBlockSize;
+      cacheConfig.maxBytes = adv->m_blurayIsoCacheMaxBytes;
+      // isoPath is the udf host == the image URL the picker derived from the
+      // item dynpath, so the player session on the same image shares blocks.
+      auto cache = std::make_shared<CBlurayIsoSession>(
+          isoPath, sourceLength, sourceLength,
+          [this](int64_t offset, uint8_t* buffer, size_t size) {
+            return ReadRaw(offset, buffer, size);
+          },
+          cacheConfig);
+      {
+        std::lock_guard<std::mutex> lock(m_isoCacheMutex);
+        m_isoCache = cache;
+      }
+      cache->Start();
+    }
+    else
+    {
+      CLog::Log(LOGDEBUG,
+                "CBlurayDirectory::InitializeBluray - skip ISO cache for {} (source length {})",
+                CURL::GetRedacted(isoPath), sourceLength);
+    }
+
+    if (!bd_open_stream(m_bd, this, ReadBlockCallback))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {} in stream mode",
+                CURL::GetRedacted(root));
+      return false;
+    }
+  }
+  else
+  {
+    if (!bd_open_files(m_bd, &m_realPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
+    {
+      CLog::Log(LOGERROR, "CBlurayDirectory::InitializeBluray - failed to open {}",
+                CURL::GetRedacted(root));
+      return false;
+    }
   }
   m_blurayInitialized = true;
 
@@ -297,6 +380,12 @@ std::string CBlurayDirectory::HexToString(const uint8_t *buf, int count)
 }
 
 std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
+  // ★ Skip disc.inf for HTTP ISO: disc.inf almost never exists (99.9% of ISOs),
+  // and CFile::Open would create a new HTTP connection consuming the CDN token
+  // which can cause 403 → crash. Let GetTitles fallback to bd_get_titles() API.
+  if (m_isoFile)
+    return {};
+
   std::string root = m_url.GetHostName();
   std::string discInfPath = URIUtils::AddFileToFolder(root, "disc.inf");
   std::vector<BLURAY_TITLE_INFO*> userTitles;
@@ -345,6 +434,57 @@ std::vector<BLURAY_TITLE_INFO*> CBlurayDirectory::GetUserPlaylists() const {
     file.Close();
   }
   return userTitles;
+}
+
+int CBlurayDirectory::ReadBlockCallback(void* handle, void* buf, int lba, int num_blocks)
+{
+  auto* self = static_cast<CBlurayDirectory*>(handle);
+  if (!self || !buf || self->m_disposing.load(std::memory_order_acquire))
+    return -1;
+
+  std::shared_ptr<CBlurayIsoSession> cache;
+  {
+    std::lock_guard<std::mutex> lock(self->m_isoCacheMutex);
+    cache = self->m_isoCache;
+  }
+  if (cache)
+    return cache->ReadBlocks(static_cast<uint8_t*>(buf), lba, num_blocks);
+
+  // Fallback: direct read
+  int64_t offset = static_cast<int64_t>(lba) * 2048;
+  int64_t size = static_cast<int64_t>(num_blocks) * 2048;
+  ssize_t ret = self->ReadRaw(offset, static_cast<uint8_t*>(buf), static_cast<size_t>(size));
+  return ret > 0 ? static_cast<int>(ret / 2048) : -1;
+}
+
+int64_t CBlurayDirectory::ReadRaw(int64_t offset, uint8_t* buffer, size_t size)
+{
+  if (!buffer || size == 0 || m_disposing.load(std::memory_order_acquire))
+    return -1;
+
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return -1;
+
+  std::lock_guard lock(m_isoReadLock);
+
+  if (!m_isoFile || m_disposing.load(std::memory_order_relaxed))
+    return -1;
+
+  if (m_isoFile->Seek(offset, SEEK_SET) != offset)
+    return -1;
+
+  size_t totalRead = 0;
+  while (totalRead < size)
+  {
+    int chunk = m_isoFile->Read(buffer + totalRead, static_cast<int>(size - totalRead));
+    if (chunk < 0)
+      return -1;
+    if (chunk == 0)
+      break;
+    totalRead += static_cast<size_t>(chunk);
+  }
+
+  return static_cast<int64_t>(totalRead > 0 ? totalRead : -1);
 }
 
 } /* namespace XFILE */

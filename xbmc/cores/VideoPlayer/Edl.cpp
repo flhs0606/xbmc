@@ -90,6 +90,8 @@ bool CEdl::ReadEditDecisionLists(const CFileItem& fileItem, const float fFramesP
 
 bool CEdl::ReadEdl(const std::string& strMovie, const float fFramesPerSecond)
 {
+  if (URIUtils::IsBluray(strMovie))
+    return false;
   Clear();
 
   std::string edlFilename(URIUtils::ReplaceExtension(strMovie, ".edl"));
@@ -283,6 +285,8 @@ bool CEdl::ReadEdl(const std::string& strMovie, const float fFramesPerSecond)
 
 bool CEdl::ReadComskip(const std::string& strMovie, const float fFramesPerSecond)
 {
+  if (URIUtils::IsBluray(strMovie))
+    return false;
   Clear();
 
   std::string comskipFilename(URIUtils::ReplaceExtension(strMovie, ".txt"));
@@ -378,6 +382,8 @@ bool CEdl::ReadComskip(const std::string& strMovie, const float fFramesPerSecond
 
 bool CEdl::ReadVideoReDo(const std::string& strMovie)
 {
+  if (URIUtils::IsBluray(strMovie))
+    return false;
   /*
    * VideoReDo file is strange. Tags are XML like, but it isn't an XML file.
    *
@@ -476,6 +482,8 @@ bool CEdl::ReadVideoReDo(const std::string& strMovie)
 
 bool CEdl::ReadBeyondTV(const std::string& strMovie)
 {
+  if (URIUtils::IsBluray(strMovie))
+    return false;
   Clear();
 
   std::string beyondTVFilename(URIUtils::ReplaceExtension(strMovie, URIUtils::GetExtension(strMovie) + ".chapters.xml"));

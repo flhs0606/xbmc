@@ -36,7 +36,8 @@ enum class StreamHdrType
   HDR_TYPE_HDR10, ///< <b>HDR10</b>, returns `hdr10` when used in infolabels
   HDR_TYPE_HDR10PLUS, ///< <b>HDR10+</b>, returns `hdr10+` when used in infolabels
   HDR_TYPE_DOLBYVISION, ///< <b>Dolby Vision</b>, returns `dolbyvision` when used in infolabels
-  HDR_TYPE_HLG ///< <b>HLG</b>, returns `hlg` when used in infolabels
+  HDR_TYPE_HLG, ///< <b>HLG</b>, returns `hlg` when used in infolabels
+  HDR_TYPE_HDRVIVID ///< <b>HDR Vivid</b>, returns `hdrvivid` when used in infolabels
 };
 
 struct StreamInfo

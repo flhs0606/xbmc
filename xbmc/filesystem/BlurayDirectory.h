@@ -11,10 +11,18 @@
 #include "IDirectory.h"
 #include "URL.h"
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 
+class CBlurayIsoSession;
 class CFileItem;
 class CFileItemList;
+
+namespace XFILE
+{
+class CFile;
+}
 
 typedef struct bluray BLURAY;
 typedef struct bd_title_info BLURAY_TITLE_INFO;
@@ -48,10 +56,17 @@ private:
   std::shared_ptr<CFileItem> GetTitle(const BLURAY_TITLE_INFO* title, const std::string& label) const;
   CURL         GetUnderlyingCURL(const CURL& url);
   std::string  HexToString(const uint8_t * buf, int count);
+  static int   ReadBlockCallback(void* handle, void* buf, int lba, int num_blocks);
+  int64_t      ReadRaw(int64_t offset, uint8_t* buffer, size_t size);
   CURL          m_url;
   BLURAY*       m_bd = nullptr;
   bool          m_blurayInitialized = false;
   std::string m_realPath;
+  std::atomic<bool> m_disposing{false};
+  std::mutex m_isoCacheMutex;
+  std::shared_ptr<CBlurayIsoSession> m_isoCache;
+  std::shared_ptr<XFILE::CFile> m_isoFile;
+  std::mutex m_isoReadLock;
 };
 
 }

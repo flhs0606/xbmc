@@ -74,18 +74,15 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
   if (fileitem.IsDiscImage())
   {
 #ifdef HAVE_LIBBLURAY
-    CURL url("udf://");
-    url.SetHostName(file);
-    url.SetFileName("BDMV/index.bdmv");
-    if (CFileUtils::Exists(url.Get()))
-      return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
-    url.SetHostName(file);
-    url.SetFileName("BDMV/INDEX.BDM");
-    if (CFileUtils::Exists(url.Get()))
-      return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
-#endif
-
+    // Skip expensive CFileUtils::Exists() on udf:// URL which opens the ISO
+    // over NFS (~1s overhead) just to check for BDMV/index.bdmv.
+    // CDVDInputStreamBluray::Open() -> OpenStream() will open the ISO once
+    // and libbluray will validate the disc structure internally.
+    // If it's not a Bluray disc, VideoPlayer fallbacks to Navigator.
+    return std::make_shared<CDVDInputStreamBluray>(pPlayer, fileitem);
+#else
     return std::make_shared<CDVDInputStreamNavigator>(pPlayer, fileitem);
+#endif
   }
 
 #ifdef HAS_OPTICAL_DRIVE

@@ -32,7 +32,9 @@ set(HEADERS BlurayStateSerializer.h
 
 if(BLURAY_FOUND)
   list(APPEND SOURCES DVDInputStreamBluray.cpp)
+
   list(APPEND HEADERS DVDInputStreamBluray.h)
+
 endif()
 
 core_add_library(dvdinputstreams)
