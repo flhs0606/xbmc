@@ -1317,19 +1317,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         pPacket->isDualStream = m_dv_dual_stream;
         pPacket->isELPackage =
             stream && m_dv_dual_stream && stream->uniqueId != m_dv_bl_stream_idx;
-        {
-          auto now = std::chrono::steady_clock::now();
-          auto& lastT = pPacket->isELPackage ? m_lastELLogTime : m_lastBLLogTime;
-          if (now - lastT >= std::chrono::seconds(1))
-          {
-            logComponentM(LOGDEBUG, LOGFFMPEG,
-                          "DemuxFFmpeg pkt streamId={} isEL={} isDual={} size={} pts={:.3f}",
-                          pPacket->iStreamId, pPacket->isELPackage,
-                          pPacket->isDualStream, pPacket->iSize,
-                          pPacket->pts / DVD_TIME_BASE);
-            lastT = now;
-          }
-        }
+
       }
     }
     if (stream && m_pSSIF)
@@ -1946,7 +1934,8 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           fps = static_cast<float>(st->iFpsRate) / static_cast<float>(st->iFpsScale);
 
         if (fps > 24.5f && pStream->time_base.num && pStream->time_base.den &&
-            pStream->codecpar->field_order != AV_FIELD_PROGRESSIVE && pStream->codecpar->field_order != AV_FIELD_UNKNOWN)
+            pStream->codecpar->field_order != AV_FIELD_PROGRESSIVE && pStream->codecpar->field_order != AV_FIELD_UNKNOWN &&
+            !(pStream->codecpar->width > 1920 || pStream->codecpar->height > 1080))
         {
           if (static_cast<float>(pStream->time_base.den) / static_cast<float>(pStream->time_base.num) < 61.0f)
           {
@@ -1961,11 +1950,30 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 
           st->bInterlaced = true;
         }
-        else if (r_frame_rate.den && r_frame_rate.num && std::abs(static_cast<float>(r_frame_rate.num) / static_cast<float>(r_frame_rate.den) - 2.0f * fps) < 0.01f)
+        else if (r_frame_rate.den && r_frame_rate.num &&
+                 std::abs(static_cast<float>(r_frame_rate.num) / static_cast<float>(r_frame_rate.den) - 2.0f * fps) < 0.01f)
         {
-          st->iFpsRate  = r_frame_rate.num;
-          st->iFpsScale = r_frame_rate.den;
-          st->bInterlaced = true;
+          // Only double frame rate for standard broadcast interlaced content (PAL 25fps / NTSC 29.97-30fps, <= 1080p).
+          // Film rates (<= 24.5 fps, e.g. 23.976p / 24.0p) and UHD/4K content are strictly progressive.
+          // MPEG-TS / Blu-ray HEVC streams frequently report 47.95 tbr due to pulldown flags or 2-tick timebases,
+          // which must not be falsely treated as 48i interlaced.
+          if (fps > 24.5f && fps <= 32.0f &&
+              pStream->codecpar->field_order != AV_FIELD_PROGRESSIVE &&
+              !(pStream->codecpar->width > 1920 || pStream->codecpar->height > 1080))
+          {
+            st->iFpsRate  = r_frame_rate.num;
+            st->iFpsScale = r_frame_rate.den;
+            st->bInterlaced = true;
+            st->bFpsRateDoubled = true;
+          }
+          else
+          {
+            CLog::Log(LOGDEBUG,
+                      "DVDDemuxFFmpeg::{} - stream {}: field-rate tbr {:d}/{:d} is 2x fps {:.3f}, "
+                      "ignoring interlaced doubling (fps={:.3f}, res={:d}x{:d}, field_order={:d})",
+                      __FUNCTION__, pStream->index, r_frame_rate.num, r_frame_rate.den, fps, fps,
+                      pStream->codecpar->width, pStream->codecpar->height, pStream->codecpar->field_order);
+          }
         }
         else if (r_frame_rate.den > 0 && r_frame_rate.num > 0 &&
                  (pStream->codecpar->codec_id == AV_CODEC_ID_MPEG1VIDEO ||
@@ -1982,6 +1990,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           st->iFpsRate  = r_frame_rate.num;
           st->iFpsScale = r_frame_rate.den;
           st->bInterlaced = true;
+          st->bFpsRateDoubled = true;
         }
 
         if (m_bMatroska && !st->bInterlaced && !st->bVFR)
@@ -2627,7 +2636,7 @@ bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
 
     if (startpts)
     {
-      *startpts = DVD_SEC_TO_TIME(static_cast<double>(ich->GetChapterPos(chapter)));
+      *startpts = DVD_NOPTS_VALUE;
     }
 
     Flush();

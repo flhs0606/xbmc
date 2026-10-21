@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "ActiveAreaDetector.h"
 #include "DVDClock.h"
 #include "DebugRenderer.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
@@ -78,7 +77,6 @@ public:
   bool IsVideoLayer() const;
   RESOLUTION GetResolution() const;
   void UpdateResolution(bool force = false);
-  void SetActiveAreaScanSuspended(bool suspended);
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
   void TriggerUpdateResolutionHdr(StreamHdrType m_hdrType);
   void SetViewMode(int iViewMode) const;
@@ -205,8 +203,6 @@ protected:
 
   CBaseRenderer *m_pRenderer = nullptr;
   OVERLAY::CRenderer m_overlays;
-  KODI::VIDEORENDERER::CActiveAreaDetector m_activeAreaDetector;
-  bool m_activeAreaStartPending{false};
   int m_lastPushedActiveTopPx{-1};
   int m_lastPushedActiveBottomPx{-1};
   int m_lastActiveAreaTopPct{-1};
@@ -215,7 +211,6 @@ protected:
   int m_lastActiveAreaBottomPx{-1};
   int m_contentAreaTopPx{0};
   int m_contentAreaBottomPx{0};
-  bool m_l5DetectorMismatchLogged{false};
   int m_kernelFrameWidth{0};
   int m_kernelFrameHeight{0};
   uint64_t m_lastKernelDimsKey{0};

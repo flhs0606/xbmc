@@ -45,6 +45,13 @@ namespace
 {
 constexpr const char* VC1_FORCE_FRAMEINT_PATH = "/sys/module/amvdec_vc1/parameters/force_frameint";
 constexpr const char* VC1_DROP_FRAME_PATH = "/sys/module/amlvideodri/parameters/drop_frame_enable";
+
+constexpr double MAX_VALID_TIMESTAMP = 100000000000.0;
+
+inline bool IsValidTimestamp(double ts)
+{
+  return ts != DVD_NOPTS_VALUE && ts >= 0.0 && std::isfinite(ts) && ts < MAX_VALID_TIMESTAMP;
+}
 }
 
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
@@ -293,6 +300,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_stripHdr10Plus = false;
   m_streamMeta = {};
   m_metadataSequencer.Reset();
+  ResetDualLayerState();
 
   CLog::Log(LOGDEBUG, "{}::{} - codec {:d} profile:{:d} extra_size:{:d} fps:{:d}/{:d}",
     __MODULE_NAME__, __FUNCTION__, m_hints.codec, m_hints.profile, m_hints.extradata.GetSize(), m_hints.fpsrate, m_hints.fpsscale);
@@ -551,7 +559,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       {
         auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
-        bool dualPriorityHdr10Plus = (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1);
+        const int dualPriority = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
+        m_bitstream->SetDualPriority(dualPriority);
 
         if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
         {
@@ -580,22 +589,6 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           m_cmv40VideoProcessorApplied =
               settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR);
 
-          if (dualPriorityHdr10Plus)
-          {
-            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, native HDR10+ has priority.",
-                      __MODULE_NAME__, __FUNCTION__);
-            m_bitstream->SetDualPriorityHdr10Plus(true);
-          }
-          else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT)) 
-          {
-            bool preferConvertHdr10Plus = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
-            m_bitstream->SetPreferCovertHdr10Plus(preferConvertHdr10Plus);
-
-            if (preferConvertHdr10Plus) 
-              CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, conversion will be prefered over original Dolby Vision.",
-                        __MODULE_NAME__, __FUNCTION__);
-          }
-
           if (m_hints.dovi.dv_profile == 7)
           {
             DOVIMode convertDovi = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
@@ -609,6 +602,39 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           }
         }
 
+        // F9-aligned Priority Dispatch: apply for all HEVC streams with dynamic HDR metadata
+        if (dualPriority == 1)
+        {
+          CLog::Log(LOGINFO, "{}::{} - HEVC bitstream - if stream also contains HDR10+, native HDR10+ has priority.",
+                    __MODULE_NAME__, __FUNCTION__);
+                  }
+        else if (dualPriority == 2)
+        {
+          CLog::Log(LOGINFO, "{}::{} - HEVC bitstream - if stream also contains HDR Vivid, native HDR Vivid has priority.",
+                    __MODULE_NAME__, __FUNCTION__);
+        }
+        else
+        {
+          if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT)) 
+          {
+            bool preferConvertHdr10Plus = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
+            m_bitstream->SetPreferCovertHdr10Plus(preferConvertHdr10Plus);
+
+            if (preferConvertHdr10Plus) 
+              CLog::Log(LOGINFO, "{}::{} - HEVC bitstream - if stream also contains HDR10+, conversion will be preferred over original Dolby Vision.",
+                        __MODULE_NAME__, __FUNCTION__);
+          }
+          if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+          {
+            bool preferConvertVivid = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT);
+            m_bitstream->SetPreferConvertHdrVivid(preferConvertVivid);
+
+            if (preferConvertVivid)
+              CLog::Log(LOGINFO, "{}::{} - HEVC bitstream - if stream also contains HDR Vivid, conversion will be preferred over original Dolby Vision.",
+                        __MODULE_NAME__, __FUNCTION__);
+          }
+        }
+
         // Potential HDR10+ (Cannot tell at this point)
         if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT))
         {
@@ -619,8 +645,16 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(peakBrightnessSource);
         }
 
+        // Potential HDR Vivid (convert to Dolby Vision P8.1 if enabled)
+        if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+        {
+          CLog::Log(LOGDEBUG, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then will be converted to Dolby Vision P8.1",
+            __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetConvertHdrVivid(true);
+        }
+
         // If HDR10 or Dual Priority HDR10+ and doing VS10 - remove the HDR10+ and DV if present to avoid conflict with VS10.
-        if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) || dualPriorityHdr10Plus)
+        if (((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 && dualPriority != 0) || dualPriority == 1))
         {
           unsigned int mode(aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS));
           if (mode < DOLBY_VISION_OUTPUT_MODE_BYPASS)
@@ -732,19 +766,29 @@ void CDVDVideoCodecAmlogic::Close(void)
 
   m_opened = false;
 
-  while (!m_packages.empty())
-  {
-    RecycleDualLayerPacket(std::move(m_packages.front()));
-    m_packages.pop_front();
-  }
+  m_freePackages.clear();
   m_last_added = true;
   m_last_pData = nullptr;
   m_last_iSize = 0;
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
+  ResetDualLayerState();
 
-  if (m_bitstream && m_hints.codec == AV_CODEC_ID_H264)
+  if (m_bitstream && (m_hints.codec == AV_CODEC_ID_H264 || m_hints.codec == AV_CODEC_ID_HEVC))
     m_bitstream->ResetStartDecode();
+}
+
+void CDVDVideoCodecAmlogic::ResetDualLayerState()
+{
+  while (!m_packages.empty())
+  {
+    RecycleDualLayerPacket(std::move(m_packages.front()));
+    m_packages.pop_front();
+  }
+  m_dlStats = {};
+  m_dlNoptsRun = 0;
+  m_dlLastPts = DVD_NOPTS_VALUE;
+  m_dlLastDts = DVD_NOPTS_VALUE;
 }
 
 DLDemuxPacket CDVDVideoCodecAmlogic::AcquireDualLayerPacket(std::size_t requiredCapacity)
@@ -767,6 +811,8 @@ void CDVDVideoCodecAmlogic::RecycleDualLayerPacket(DLDemuxPacket&& packet)
   packet.size = 0;
   packet.isELPackage = false;
   packet.dts = 0.0;
+  packet.pts = 0.0;
+  packet.m_ptsOffsetCorrection = 0.0;
 
   if (m_freePackages.size() < MAX_CACHED_DUAL_LAYER_PACKETS)
     m_freePackages.emplace_back(std::move(packet));
@@ -776,128 +822,220 @@ bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, con
 {
   bool dual_layer_converted = false;
 
-  if (packet.isELPackage)
-    ++m_dlStatEL;
-  else
-    ++m_dlStatBL;
+  ++(packet.isELPackage ? m_dlStats.el : m_dlStats.bl);
 
   const double frame_period = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
-    ? (static_cast<double>(DVD_TIME_BASE) * static_cast<double>(m_hints.fpsscale) / static_cast<double>(m_hints.fpsrate))
-    : (static_cast<double>(DVD_TIME_BASE) / 24.0);
-  const double match_tolerance = frame_period * 0.5;
-  constexpr size_t max_queue_depth = 32;
+    ? (static_cast<double>(DVD_TIME_BASE) * m_hints.fpsscale / m_hints.fpsrate)
+    : (DVD_TIME_BASE / 24.0);
+  // Match tolerance must scale with frame period and never exceed a full frame duration,
+  // preventing adjacent frame cross-matching on high-framerate (e.g. 60fps) dual-layer streams.
+  const double match_tolerance = frame_period * 0.8;
+  constexpr size_t max_queue_depth = 128;
+  // Upper bound on the number of consecutive access units whose Base Layer timestamp may be
+  // reconstructed by extrapolation before the reconstruction is treated as untrustworthy.
+  constexpr uint32_t max_timestamp_extrapolation = 120;
 
-  auto matchIt = m_packages.end();
-  double best_delta = -1.0;
-  bool positional_match = false;
-  for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
+  const bool pkt_pts_valid = IsValidTimestamp(packet.pts);
+  if (!pkt_pts_valid)
+    ++(packet.isELPackage ? m_dlStats.untimedEL : m_dlStats.untimedBL);
+
+  // Enqueue the incoming packet in arrival order. Both layers arrive in stream (decode) order.
+  // Base Layer packets carry inter-frame dependencies and MUST strictly be emitted in arrival
+  // order to the hardware decoder. Enqueuing first guarantees that we only ever pair and emit
+  // the oldest un-emitted Base Layer packet, never allowing later BL frames to bypass earlier ones.
+  DLDemuxPacket queuedPacket = AcquireDualLayerPacket(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE);
+  memcpy(queuedPacket.buffer.GetData(), packet.pData, packet.iSize);
+  memset(queuedPacket.buffer.GetData() + packet.iSize, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+  queuedPacket.size = iSize;
+  queuedPacket.isELPackage = packet.isELPackage;
+  queuedPacket.dts = packet.dts;
+  queuedPacket.pts = packet.pts;
+  queuedPacket.m_ptsOffsetCorrection = packet.m_ptsOffsetCorrection;
+  m_packages.emplace_back(std::move(queuedPacket));
+
+  // Find the oldest un-emitted Base Layer packet in the queue.
+  const auto oldestBlIt = std::find_if(
+      m_packages.begin(), m_packages.end(),
+      [](const auto& p) { return !p.isELPackage; });
+
+  if (oldestBlIt != m_packages.end())
   {
-    if (it->isELPackage == packet.isELPackage)
-      continue;
-    if (packet.pts == DVD_NOPTS_VALUE || it->pts == DVD_NOPTS_VALUE)
-      continue;
-    const double raw_delta = packet.pts - it->pts;
-    const double delta = raw_delta < 0.0 ? -raw_delta : raw_delta;
-    if (best_delta < 0.0 || delta < best_delta)
+    const bool bl_pts_valid = IsValidTimestamp(oldestBlIt->pts);
+    const bool bl_dts_valid = IsValidTimestamp(oldestBlIt->dts);
+    const auto oldestElIt = std::find_if(
+        m_packages.begin(), m_packages.end(),
+        [](const auto& p) { return p.isELPackage; });
+
+    auto matchElIt = m_packages.end();
+    bool ordinal_match = false;
+
+    if (oldestElIt == m_packages.end())
     {
-      best_delta = delta;
-      matchIt = it;
+      // No Enhancement Layer candidate in queue yet; wait for partner packet.
     }
-  }
-
-  if (matchIt == m_packages.end() && packet.pts == DVD_NOPTS_VALUE)
-  {
-    for (auto rit = m_packages.rbegin(); rit != m_packages.rend(); ++rit)
+    else if ((!bl_pts_valid && !bl_dts_valid) ||
+             (!IsValidTimestamp(oldestElIt->pts) && !IsValidTimestamp(oldestElIt->dts)))
     {
-      if (rit->isELPackage != packet.isELPackage)
-      {
-        matchIt = std::prev(rit.base());
-        positional_match = true;
-        break;
-      }
+      // When either side lacks valid timestamps, fallback to ordinal (FIFO) pairing.
+      matchElIt = oldestElIt;
+      ordinal_match = true;
     }
-  }
-
-  const bool have_match =
-      (matchIt != m_packages.end()) && (positional_match || best_delta <= match_tolerance);
-
-  if (positional_match)
-    LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
-                          "dlpair: positional pairing for pts-less packet (isEL={})",
-                          packet.isELPackage);
-
-  if (have_match)
-  {
-    DLDemuxPacket& dualLayerPacket = *matchIt;
-
-    if (packet.isELPackage)
-      dual_layer_converted = m_bitstream->Convert(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, pData, iSize, packet.pts);
     else
-      dual_layer_converted = m_bitstream->Convert(pData, iSize, dualLayerPacket.buffer.GetData(), dualLayerPacket.size, packet.pts);
-
-    if (dual_layer_converted && m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE &&
-        m_hints.codec == AV_CODEC_ID_HEVC)
     {
-      m_pendingMeta = m_streamMeta;
-      if (packet.isELPackage)
-      {
-        AMLLatchHevcDoviRpu(pData, iSize, m_nalLengthSize, m_pendingMeta);
-        AMLLatchHevcSei(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                        m_pendingMeta);
-      }
-      else
-      {
-        AMLLatchHevcDoviRpu(dualLayerPacket.buffer.GetData(), dualLayerPacket.size, m_nalLengthSize,
-                            m_pendingMeta);
-        AMLLatchHevcSei(pData, iSize, m_nalLengthSize, m_pendingMeta);
-      }
-      if (!m_pendingMeta.hdrMdcv.empty())
-        m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
-      if (!m_pendingMeta.hdrCll.empty())
-        m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
+      auto findBestMatch = [&](double bl_ts, auto get_el_ts, bool record_miss) {
+        double best_delta = match_tolerance + 1.0;
+        auto best_it = m_packages.end();
+        bool candidate_found = false;
+        const double bl_corr_ts = bl_ts + oldestBlIt->m_ptsOffsetCorrection;
+
+        for (auto it = m_packages.begin(); it != m_packages.end(); ++it)
+        {
+          if (!it->isELPackage || !IsValidTimestamp(get_el_ts(*it)))
+            continue;
+
+          candidate_found = true;
+          const double el_ts = get_el_ts(*it);
+          double delta = std::abs(bl_ts - el_ts);
+
+          if (delta > match_tolerance)
+          {
+            const double rawDelta = std::abs(bl_corr_ts - (el_ts + it->m_ptsOffsetCorrection));
+            if (rawDelta < delta)
+              delta = rawDelta;
+          }
+
+          if (delta < best_delta)
+          {
+            best_delta = delta;
+            best_it = it;
+            if (delta == 0.0)
+              break;
+          }
+        }
+
+        if (best_delta > match_tolerance)
+        {
+          if (record_miss && candidate_found)
+            m_dlStats.missDelta = best_delta;
+          return m_packages.end();
+        }
+        return best_it;
+      };
+
+      // Tier 1: DTS-based nearest-neighbor (native decode causality dependency order).
+      if (bl_dts_valid)
+        matchElIt = findBestMatch(oldestBlIt->dts, [](const auto& p) { return p.dts; }, false);
+
+      // Tier 2: PTS-based nearest-neighbor fallback (when DTS is missing or did not match).
+      if (matchElIt == m_packages.end() && bl_pts_valid)
+        matchElIt = findBestMatch(oldestBlIt->pts, [](const auto& p) { return p.pts; }, true);
     }
 
-    if (dual_layer_converted)
+    if (matchElIt != m_packages.end())
     {
-      ++m_dlStatPaired;
-      RecycleDualLayerPacket(std::move(*matchIt));
-      m_packages.erase(matchIt);
-    }
-  }
-  else if (best_delta >= 0.0)
-    m_dlStatMissDelta = best_delta;
+      if (ordinal_match)
+        LOG_THROTTLE_PERIODIC(LOGDEBUG, LOGVIDEO, 1000,
+                              "dlpair: ordinal pairing (isEL={})", packet.isELPackage);
 
-  if (!dual_layer_converted)
-  {
-    DLDemuxPacket queuedPacket = AcquireDualLayerPacket(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE);
-    memcpy(queuedPacket.buffer.GetData(), packet.pData, packet.iSize);
-    memset(queuedPacket.buffer.GetData() + packet.iSize, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    queuedPacket.size = iSize;
-    queuedPacket.isELPackage = packet.isELPackage;
-    queuedPacket.dts = packet.dts;
-    queuedPacket.pts = packet.pts;
-    m_packages.emplace_back(std::move(queuedPacket));
+      DLDemuxPacket& blPacket = *oldestBlIt;
+      DLDemuxPacket& elPacket = *matchElIt;
+
+      // Base Layer timestamps are authoritative.
+      double bl_pts = blPacket.pts;
+      double bl_dts = blPacket.dts;
+      const bool bl_pts_native = IsValidTimestamp(bl_pts);
+      const bool bl_dts_native = IsValidTimestamp(bl_dts);
+
+      bool bl_pts_valid_cur = bl_pts_native;
+      bool bl_dts_valid_cur = bl_dts_native;
+
+      // Extrapolate if Base Layer timestamp was blanked by CheckContinuity
+      if (!bl_pts_native && IsValidTimestamp(m_dlLastPts) &&
+          m_dlNoptsRun < max_timestamp_extrapolation)
+      {
+        bl_pts = m_dlLastPts + frame_period;
+        bl_pts_valid_cur = true;
+      }
+      if (!bl_dts_native && IsValidTimestamp(m_dlLastDts) &&
+          m_dlNoptsRun < max_timestamp_extrapolation)
+      {
+        bl_dts = m_dlLastDts + frame_period;
+        bl_dts_valid_cur = true;
+      }
+      if (!bl_dts_valid_cur)
+      {
+        bl_dts = bl_pts;
+        bl_dts_valid_cur = bl_pts_valid_cur;
+      }
+
+      if (bl_pts_native)
+        m_dlNoptsRun = 0;
+      else if (bl_pts_valid_cur)
+        ++m_dlNoptsRun;
+
+      if (bl_pts_valid_cur)
+        m_dlLastPts = bl_pts;
+      if (bl_dts_valid_cur)
+        m_dlLastDts = bl_dts;
+
+      const double convertPts = bl_pts_valid_cur ? bl_pts : DVD_NOPTS_VALUE;
+      uint8_t* blData = blPacket.buffer.GetData();
+      const uint32_t blSize = blPacket.size;
+      uint8_t* elData = elPacket.buffer.GetData();
+      const uint32_t elSize = elPacket.size;
+
+      dual_layer_converted = m_bitstream->Convert(blData, blSize, elData, elSize, convertPts);
+
+      if (dual_layer_converted)
+      {
+        if (m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE && m_hints.codec == AV_CODEC_ID_HEVC)
+        {
+          m_pendingMeta = m_streamMeta;
+          AMLLatchHevcDoviRpu(elData, elSize, m_nalLengthSize, m_pendingMeta);
+          AMLLatchHevcSei(blData, blSize, m_nalLengthSize, m_pendingMeta);
+          if (!m_pendingMeta.hdrMdcv.empty())
+            m_streamMeta.hdrMdcv = m_pendingMeta.hdrMdcv;
+          if (!m_pendingMeta.hdrCll.empty())
+            m_streamMeta.hdrCll = m_pendingMeta.hdrCll;
+        }
+
+        ++m_dlStats.paired;
+        if (ordinal_match)
+          ++m_dlStats.ordered;
+        RecycleDualLayerPacket(std::move(*oldestBlIt));
+        RecycleDualLayerPacket(std::move(*matchElIt));
+        m_packages.erase(oldestBlIt);
+        m_packages.erase(matchElIt);
+      }
+    }
   }
 
   while (m_packages.size() > max_queue_depth)
   {
-    ++m_dlStatEvicted;
+    ++m_dlStats.evicted;
     RecycleDualLayerPacket(std::move(m_packages.front()));
     m_packages.pop_front();
   }
+
+  if (m_packages.size() > m_dlStats.depthMax)
+    m_dlStats.depthMax = static_cast<uint32_t>(m_packages.size());
 
   const int64_t now = CurrentHostCounter();
   if (now - m_dlStatLastLog >= CurrentHostFrequency())
   {
     m_dlStatLastLog = now;
-    logComponentM(LOGDEBUG, LOGVIDEO,
-                  "dlpair: bl={} el={} paired={} evicted={} depth={} missDeltaMs={:.1f} tolMs={:.1f}",
-                  m_dlStatBL, m_dlStatEL, m_dlStatPaired, m_dlStatEvicted, m_packages.size(),
-                  m_dlStatMissDelta / 1000.0, match_tolerance / 1000.0);
-    m_dlStatBL = 0;
-    m_dlStatEL = 0;
-    m_dlStatPaired = 0;
-    m_dlStatEvicted = 0;
+    if (m_dlStats.bl > 0 || m_dlStats.el > 0 || m_dlStats.paired > 0)
+    {
+      CLog::Log(LOGDEBUG,
+                "dlpair: bl={} el={} paired={} ordinal={} untimedBL={} untimedEL={} evicted={} "
+                "depth={} maxDepth={} missMs={:.1f} tolMs={:.1f}",
+                m_dlStats.bl, m_dlStats.el, m_dlStats.paired, m_dlStats.ordered,
+                m_dlStats.untimedBL, m_dlStats.untimedEL, m_dlStats.evicted,
+                m_packages.size(), m_dlStats.depthMax,
+                m_dlStats.missDelta < 0.0 ? -1.0 : m_dlStats.missDelta / 1000.0,
+                match_tolerance / 1000.0);
+    }
+    m_dlStats = {};
   }
 
   if (!dual_layer_converted)
@@ -1018,6 +1156,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   DrainMetadataToClock();
 
+  double effectiveDts = packet.dts;
+  double effectivePts = packet.pts;
+
   if (pData)
   {
     if (m_dualLayer && m_streamMeta.structure != "dt-dl")
@@ -1076,6 +1217,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         m_last_pData = pData = m_bitstream->GetConvertBuffer();
         m_last_iSize = iSize = m_bitstream->GetConvertSize();
       }
+
+      if (packet.isDualStream)
+      {
+        if (m_dlLastPts != DVD_NOPTS_VALUE)
+          effectivePts = m_dlLastPts;
+        if (m_dlLastDts != DVD_NOPTS_VALUE)
+          effectiveDts = m_dlLastDts;
+      }
     }
     else if (!m_has_keyframe && m_bitparser)
     {
@@ -1088,7 +1237,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       else
         m_has_keyframe = true;
     }
-    FrameRateTracking( pData, iSize, packet.dts, packet.pts);
+    FrameRateTracking( pData, iSize, effectiveDts, effectivePts);
 
     if (!m_hdr10PlusUpgraded &&
         (m_hints.codec == AV_CODEC_ID_VP9 || m_hints.codec == AV_CODEC_ID_AV1) &&
@@ -1110,7 +1259,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
     if (!m_opened)
     {
-      if (packet.pts == DVD_NOPTS_VALUE)
+      if (effectivePts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
 
       logComponentM(LOGDEBUG, LOGVIDEO, "Open decoder: fps:{:d}/{:d}", m_hints.fpsrate, m_hints.fpsscale);
@@ -1157,7 +1306,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  m_last_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+  m_last_added = m_Codec->AddData(pData, iSize, effectiveDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : effectivePts);
 
   if (m_stripHdr10Plus && !m_pendingMeta.hdr10pSei.empty() &&
       std::find(m_streamMeta.flags.begin(), m_streamMeta.flags.end(), "hdr10plus-removed") ==
@@ -1173,12 +1322,12 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       m_pendingMeta.hdr10pSei = sideDataMeta.hdr10pSei;
     m_pendingMeta.Inherit(m_lastMeta);
     m_lastMeta = m_pendingMeta;
-    if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
+    if (m_hints.ptsinvalid || effectivePts == DVD_NOPTS_VALUE)
       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_pendingMeta);
     else
     {
-      m_metadataSequencer.Commit(packet.pts, m_pendingMeta);
-      m_lastCommitPts = packet.pts;
+      m_metadataSequencer.Commit(effectivePts, m_pendingMeta);
+      m_lastCommitPts = effectivePts;
     }
     m_pendingMeta = m_streamMeta;
   }
@@ -1239,11 +1388,6 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   m_Codec->Reset();
 
-  while (!m_packages.empty())
-  {
-    RecycleDualLayerPacket(std::move(m_packages.front()));
-    m_packages.pop_front();
-  }
   m_last_added = true;
   m_last_pData = nullptr;
   m_last_iSize = 0;
@@ -1252,7 +1396,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
   m_has_keyframe = false;
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
-  if (m_bitstream && m_hints.codec == AV_CODEC_ID_H264)
+  ResetDualLayerState();
+  if (m_bitstream && (m_hints.codec == AV_CODEC_ID_H264 || m_hints.codec == AV_CODEC_ID_HEVC))
     m_bitstream->ResetStartDecode();
 }
 

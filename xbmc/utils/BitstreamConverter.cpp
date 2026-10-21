@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 #ifndef UINT16_MAX
@@ -1867,6 +1868,104 @@ bool CBitstreamConverter::EnsureOutputBufferCapacity(uint8_t** poutbuf, uint32_t
   return true;
 }
 
+#ifdef HAVE_LIBDOVI
+namespace
+{
+// Auto-detect unstable heterogeneous ST-DL Profile 7 FEL:
+// When a single-track Profile 7 FEL stream has mismatched BL/EL slice types
+// (e.g. BL is IDR while EL is CRA) or lacks in-band EL SPS, Amlogic's hardware
+// dual-decoder suffers DPB reference loss and stalls at ~1fps.
+// In contrast, well-authored ST-DL FEL streams (e.g. Saw II with IDR/IDR and in-band SPS)
+// decode smoothly in native hardware FEL mode and must NOT be converted.
+bool DetectUnstableStdlFel(const uint8_t* pData,
+                           int iSize,
+                           int lenSize,
+                           int& blFirstSlice,
+                           int& elFirstSlice,
+                           bool& elHasInbandSps)
+{
+  if (lenSize <= 0 || lenSize > 4 || !pData || iSize <= 0)
+    return false;
+
+  constexpr size_t HEVC_NAL_HEADER_SIZE = 2;
+  auto get_nal_type = [](const uint8_t* p) -> uint8_t {
+    return (*p >> 1) & 0x3F;
+  };
+  auto is_slice_nal = [](uint8_t type) -> bool {
+    // Standard HEVC VCL slice types: 0-9 (TRAIL, TSA, STSA, RADL, RASL) and 16-21 (BLA, IDR, CRA)
+    return type <= 9 || (type >= 16 && type <= 21);
+  };
+
+  bool is_fel = false;
+  bool rpu_parsed = false;
+  const uint8_t* scan = pData;
+  const uint8_t* scan_end = pData + iSize;
+
+  while (scan + lenSize < scan_end)
+  {
+    uint32_t nal_len = 0;
+    for (int k = 0; k < lenSize; ++k)
+      nal_len = (nal_len << 8) | scan[k];
+    scan += lenSize;
+    if (nal_len == 0 || nal_len > static_cast<uint32_t>(scan_end - scan))
+      break;
+
+    const uint8_t ntype = get_nal_type(scan);
+
+    if (blFirstSlice == -1 && is_slice_nal(ntype))
+    {
+      blFirstSlice = ntype;
+    }
+    else if (ntype == HEVC_NAL_UNSPEC63 && nal_len > HEVC_NAL_HEADER_SIZE)
+    {
+      const uint8_t inner_ntype = get_nal_type(scan + HEVC_NAL_HEADER_SIZE);
+      if (inner_ntype == HEVC_NAL_SPS)
+        elHasInbandSps = true;
+      else if (elFirstSlice == -1 && is_slice_nal(inner_ntype))
+        elFirstSlice = inner_ntype;
+    }
+    else if (ntype == HEVC_NAL_UNSPEC62 && !rpu_parsed)
+    {
+      rpu_parsed = true;
+      DoviRpuOpaque* op = dovi_parse_unspec62_nalu(scan, nal_len);
+      if (op)
+      {
+        const DoviRpuDataHeader* h = dovi_rpu_get_header(op);
+        if (h)
+        {
+          if (h->el_type && strcmp(h->el_type, "FEL") == 0)
+            is_fel = true;
+          dovi_rpu_free_header(h);
+        }
+        dovi_rpu_free(op);
+      }
+    }
+
+    // Short-circuit evaluations once key metadata has been gathered
+    if (rpu_parsed)
+    {
+      if (!is_fel)
+        break; // Non-FEL stream (e.g. MEL): conversion never needed, stop scanning immediately
+
+      if (blFirstSlice != -1 && elFirstSlice != -1)
+      {
+        if (blFirstSlice != elFirstSlice)
+          break; // Mismatch confirmed: conversion guaranteed, stop scanning immediately
+        if (elHasInbandSps)
+          break; // Homogeneous + in-band SPS: conversion not needed, stop scanning immediately
+      }
+    }
+
+    scan += nal_len;
+  }
+
+  const bool slice_mismatch = (blFirstSlice != -1 && elFirstSlice != -1 &&
+                               blFirstSlice != elFirstSlice);
+  return is_fel && (!elHasInbandSps || slice_mismatch);
+}
+} // namespace
+#endif
+
 bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **poutbuf, int *poutbuf_size, double pts)
 {
   // based on h264_mp4toannexb_bsf.c (ffmpeg)
@@ -1900,6 +1999,28 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
     default:
       return false;
   }
+
+#ifdef HAVE_LIBDOVI
+  if (m_first_frame && m_codec == AV_CODEC_ID_HEVC &&
+      m_convert_dovi == DOVIMode::MODE_NONE &&
+      m_hints.dovi.dv_profile == 7 && m_hints.dovi.el_present_flag &&
+      !m_hints.is_dual_track)
+  {
+    int bl_first_slice = -1;
+    int el_first_slice = -1;
+    bool el_has_inband_sps = false;
+
+    if (DetectUnstableStdlFel(pData, iSize, m_sps_pps_context.length_size,
+                              bl_first_slice, el_first_slice, el_has_inband_sps))
+    {
+      m_convert_dovi = DOVIMode::MODE_TOMEL;
+      logComponentM(LOGINFO, LOGVIDEO,
+                    "BSC: detected unstable heterogeneous ST-DL FEL (BL_slice={} EL_slice={} inband_sps={}) - "
+                    "auto-converting to MEL for smooth 24fps hardware playback",
+                    bl_first_slice, el_first_slice, el_has_inband_sps);
+    }
+  }
+#endif
 
   do
   {

@@ -6580,7 +6580,6 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       m_bdFeatureTagsFired = true;
       SetAVChange("FeatureStart");
     }
-    m_renderManager.SetActiveAreaScanSuspended(!m_bdFeatureStable);
   }
 
   state.dts = DVD_NOPTS_VALUE;
@@ -6598,8 +6597,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::shared_ptr<CDVDInputStream::IMenus> pMenu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
 
-  if (pMenu && m_pInputStream && !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
-    m_renderManager.SetActiveAreaScanSuspended(pMenu->IsInMenu());
+
 
   if (m_pDemuxer)
   {

@@ -34,6 +34,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 #include "utils/LogThrottle.h"
@@ -371,7 +372,6 @@ bool CRenderManager::Configure()
     m_overlays.Reset();
     m_overlays.SetStereoMode(m_picture.stereoMode);
 
-    m_activeAreaDetector.Stop();
     m_lastPushedActiveTopPx = -1;
     m_lastPushedActiveBottomPx = -1;
     m_lastActiveAreaTopPct = -1;
@@ -380,27 +380,7 @@ bool CRenderManager::Configure()
     m_lastActiveAreaBottomPx = -1;
     m_contentAreaTopPx = 0;
     m_contentAreaBottomPx = 0;
-    m_l5DetectorMismatchLogged = false;
     m_dataCacheCore.SetVideoActiveArea(0, 0, 0, 0);
-    {
-      const auto subSettings = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings();
-      m_activeAreaDetector.SetManualAspect(subSettings->GetPgsManualActiveAspect());
-      const bool stereoscopic =
-          m_picture.stereoMode == "left_right" || m_picture.stereoMode == "right_left" ||
-          m_picture.stereoMode == "top_bottom" || m_picture.stereoMode == "bottom_top" ||
-          m_picture.stereoMode == "block_lr" || m_picture.stereoMode == "block_rl";
-      const std::string filePath = g_application.CurrentFileItem().GetDynPath();
-      const bool discSource = StringUtils::StartsWith(filePath, "bluray://");
-      m_activeAreaStartPending = false;
-      if (!filePath.empty() && !stereoscopic)
-        m_activeAreaDetector.Start(filePath, true, discSource);
-      else if (!stereoscopic)
-      {
-        m_activeAreaStartPending = true;
-        logComponentM(LOGDEBUG, LOGVIDEO,
-                      "active-area: detector start deferred - no file path at configure");
-      }
-    }
 
     m_renderState = STATE_CONFIGURED;
     logComponentM(LOGDEBUG, LOGVIDEO, "RenderManager.state -> CONFIGURED");
@@ -1006,7 +986,6 @@ void CRenderManager::UnInit()
   if (m_asyncVideoWorkerActive.load(std::memory_order_relaxed))
     logM(LOGERROR, "UnInit entered with the async video worker still active");
 
-  m_activeAreaDetector.Stop();
   m_overlays.UnInit();
   m_debugRenderer.Dispose();
 
@@ -1317,26 +1296,10 @@ RESOLUTION CRenderManager::GetResolution() const {
   return res;
 }
 
-void CRenderManager::SetActiveAreaScanSuspended(bool suspended)
-{
-  m_activeAreaDetector.SetSuspended(suspended);
-}
-
 void CRenderManager::UpdateActiveAreaInfo()
 {
   if (!m_pRenderer)
     return;
-
-  if (m_activeAreaStartPending)
-  {
-    const std::string latePath = g_application.CurrentFileItem().GetDynPath();
-    if (!latePath.empty())
-    {
-      m_activeAreaStartPending = false;
-      m_activeAreaDetector.Start(latePath, true, StringUtils::StartsWith(latePath, "bluray://"));
-      logComponentM(LOGDEBUG, LOGVIDEO, "active-area: detector start recovered - {}", latePath);
-    }
-  }
 
   CRect src, dst, view;
   GetGuiVideoRect(src, dst, view);
@@ -1388,42 +1351,20 @@ void CRenderManager::UpdateActiveAreaInfo()
   {
     uint16_t l5Top = 0;
     uint16_t l5Bottom = 0;
-    bool haveL5 = false;
     if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
         m_dataCacheCore.GetVideoDoViActiveArea(l5Top, l5Bottom) && (l5Top > 0 || l5Bottom > 0))
-      haveL5 = true;
-    m_activeAreaDetector.NotifyL5Transition(haveL5, l5Top, l5Bottom);
-    int detTop = 0;
-    int detBot = 0;
-    const bool haveDet = m_activeAreaDetector.IsStable() &&
-                         m_activeAreaDetector.TryGetActiveArea(frameW, frameH, detTop, detBot);
-    if (haveL5 || haveDet)
     {
-      m_contentAreaTopPx = std::max(haveL5 ? static_cast<int>(l5Top) : 0, haveDet ? detTop : 0);
-      m_contentAreaBottomPx =
-          std::max(haveL5 ? static_cast<int>(l5Bottom) : 0, haveDet ? detBot : 0);
+      m_contentAreaTopPx = static_cast<int>(l5Top);
+      m_contentAreaBottomPx = static_cast<int>(l5Bottom);
     }
-    if (haveL5 && haveDet && !m_l5DetectorMismatchLogged &&
-        (l5Top > detTop + 16 || l5Bottom > detBot + 16))
+    else
     {
-      m_l5DetectorMismatchLogged = true;
-      logM(LOGINFO,
-           "active-area: DoVi L5 {}top/{}bottom exceeds measured bars {}top/{}bottom, "
-           "publishing metadata value",
-           l5Top, l5Bottom, detTop, detBot);
+      m_contentAreaTopPx = 0;
+      m_contentAreaBottomPx = 0;
     }
   }
   int topPx = m_contentAreaTopPx;
   int botPx = m_contentAreaBottomPx;
-  if (!narrowContainer && topPx == 0 && botPx == 0 &&
-      m_picture.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-      !m_activeAreaDetector.IsStable())
-  {
-    const int scopeH = (frameW * 5 + 6) / 12;
-    const int presumed = std::max(0, (frameH - scopeH) / 2);
-    topPx = presumed;
-    botPx = presumed;
-  }
 
   int geoTopPx = 0;
   int geoBotPx = 0;
@@ -1634,7 +1575,6 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
             else
               l5UsableForMode = (doviFrameMeta.level5_active_area_top_offset > 0);
           }
-          m_activeAreaDetector.SetL5Available(l5UsableForMode);
 
           if (l5UsableForMode)
           {
@@ -1642,28 +1582,21 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
             botPx = doviFrameMeta.level5_active_area_bottom_offset;
             haveOffsets = true;
           }
-          else if (m_activeAreaDetector.IsStable() &&
-                   m_activeAreaDetector.TryGetActiveArea(frameW, frameH, topPx, botPx))
-          {
-            haveOffsets = true;
-          }
 
           {
-            const bool detStable = m_activeAreaDetector.IsStable();
             static int64_t s_lastAaKey = -1;
             const int64_t aaKey = static_cast<int64_t>(pgsMode) |
                                   (static_cast<int64_t>(haveOffsets) << 3) |
                                   (static_cast<int64_t>(l5UsableForMode) << 4) |
-                                  (static_cast<int64_t>(detStable) << 5) |
                                   (static_cast<int64_t>(topPx & 0xFFFF) << 8) |
                                   (static_cast<int64_t>(botPx & 0xFFFF) << 24);
             if (aaKey != s_lastAaKey)
             {
               s_lastAaKey = aaKey;
               logComponentM(LOGDEBUG, LOGVIDEO,
-                            "ActiveArea pgsMode={} doviL5={} l5Usable={} detStable={} "
+                            "ActiveArea pgsMode={} doviL5={} l5Usable={} "
                             "topPx={} botPx={} haveOffsets={} frameH={}",
-                            pgsMode, doviFrameMeta.has_level5_metadata, l5UsableForMode, detStable,
+                            pgsMode, doviFrameMeta.has_level5_metadata, l5UsableForMode,
                             topPx, botPx, haveOffsets, frameH);
             }
           }
@@ -1683,7 +1616,6 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
         }
         else
         {
-          m_activeAreaDetector.SetL5Available(true);
           if (m_lastPushedActiveTopPx != 0 || m_lastPushedActiveBottomPx != 0)
           {
             m_overlays.SetActiveAreaPx(0, 0);
@@ -2220,8 +2152,6 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
   const bool isText = o && (o->IsOverlayType(DVDOVERLAY_TYPE_SSA) ||
                             o->IsOverlayType(DVDOVERLAY_TYPE_TEXT));
   m_overlays.AddOverlay(std::move(o), pts, idx);
-  if (isBitmap || isText)
-    m_activeAreaDetector.NotifyBitmapOverlaySeen();
 }
 
 bool CRenderManager::Supports(ERENDERFEATURE feature) const

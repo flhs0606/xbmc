@@ -188,8 +188,6 @@ protected:
   std::atomic<bool> m_aborted{false};
   std::shared_ptr<CDVDInputStream::IMenus> m_menuInterface;
   std::shared_ptr<CDVDInputStreamFFmpeg> m_ffmpegInput;
-  std::chrono::steady_clock::time_point m_lastBLLogTime;
-  std::chrono::steady_clock::time_point m_lastELLogTime;
 
   // Due to limitations of ffmpeg, we only can detect a program change
   // with a packet. This struct saves the packet for the next read and
