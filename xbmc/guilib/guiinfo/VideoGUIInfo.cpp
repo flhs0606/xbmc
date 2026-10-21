@@ -70,8 +70,27 @@ bool CVideoGUIInfo::InitCurrentItem(CFileItem *item)
 
     CLog::Log(LOGDEBUG, "CVideoGUIInfo::InitCurrentItem({})", CURL::GetRedacted(item->GetPath()));
 
-    // Find a thumb for this file.
-    if (!item->HasArt("thumb"))
+    // For disc images, Blu-ray streams, .strm items and internet streams, skip thumb and streamdetails
+    // extraction on the GUI thread to avoid concurrent VFS opens against single-connection
+    // media sources (e.g. CDN-signed HTTP sources where concurrent Range workers trigger 403).
+    // However, if this is a library item missing poster artwork, fill art directly from local SQLite
+    // via FillLibraryArt which performs no VFS opens or network requests.
+    const bool isDisc = item->IsDiscImage() || URIUtils::IsDiscImage(item->GetDynPath()) ||
+                        URIUtils::IsBluray(item->GetDynPath()) || URIUtils::IsBluray(item->GetPath());
+    const bool isStrmOrStream = URIUtils::HasExtension(item->GetPath(), ".strm") ||
+                                URIUtils::HasExtension(item->GetDynPath(), ".strm") ||
+                                item->IsInternetStream() ||
+                                URIUtils::IsInternetStream(item->GetDynPath());
+
+    if (isDisc || isStrmOrStream)
+    {
+      if (item->HasVideoInfoTag() && item->GetVideoInfoTag()->m_iDbId > -1 && !item->HasArt("poster"))
+      {
+        CVideoThumbLoader loader;
+        loader.FillLibraryArt(*item);
+      }
+    }
+    else if (!item->HasArt("thumb") || !item->HasArt("poster"))
     {
       CVideoThumbLoader loader;
       loader.LoadItem(item);

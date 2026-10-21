@@ -23,7 +23,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/Resolution.h"
 #include "platform/linux/powermanagement/LinuxPowerSyscall.h"
-#include "platform/linux/ScreenshotSurfaceAML.h"
+#include "rendering/gles/ScreenshotSurfaceGLES.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -99,7 +99,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
   RETRO::CRPProcessInfoAmlogic::Register();
   RETRO::CRPProcessInfoAmlogic::RegisterRendererFactory(new RETRO::CRendererFactoryOpenGLES);
   CRendererAML::Register();
-  CScreenshotSurfaceAML::Register();
+  CScreenshotSurfaceGLES::Register();
 
   if (aml_get_cpufamily_id() <= AML_GXL)
     aml_set_framebuffer_resolution(1920, 1080, m_framebuffer_name);

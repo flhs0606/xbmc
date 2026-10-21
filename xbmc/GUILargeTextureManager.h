@@ -124,7 +124,8 @@ private:
     const CTextureArray& GetTexture() const { return m_texture; }
 
   private:
-    static const unsigned int TIME_TO_DELETE = 5000;
+    // Retain textures in memory for 2000ms after leaving view to balance scrolling cache and RAM/VRAM usage
+    static const unsigned int TIME_TO_DELETE = 2000;
 
     unsigned int m_refCount;
     std::string m_path;

@@ -95,6 +95,11 @@ public:
   void ResetAutoScrolling();
   void UpdateAutoScrolling(unsigned int currentTime);
 
+  /*! \brief Returns the index of the first visible row */
+  inline int GetOffset() const { return m_offset; }
+  /*! \brief Returns the number of items per page in this container */
+  inline int GetItemsPerPage() const { return m_itemsPerPage; }
+
 #ifdef _DEBUG
   void DumpTextureUse() override;
 #endif
@@ -198,11 +203,6 @@ protected:
    this also marks the control as dirty (if needed)
    */
   void SetOffset(int offset);
-  /*! \brief Returns the index of the first visible row
-   returns the first row. This may be outside of the range of available items. Use GetItemOffset() to retrieve the first visible item in the list.
-   \sa GetItemOffset
-  */
-  inline int GetOffset() const { return m_offset; }
   /*! \brief Returns the index of the first visible item
    returns the first visible item. This will always be in the range of available items. Use GetOffset() to retrieve the first visible row in the list.
    \sa GetOffset

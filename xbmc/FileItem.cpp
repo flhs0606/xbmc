@@ -1199,6 +1199,7 @@ bool CFileItem::IsDiscImage() const
 
   if (HasProperty("httpurl.disc_image"))
     return GetProperty("httpurl.disc_image").asBoolean(false);
+
   return URIUtils::IsDiscImage(GetDynPath());
 }
 
@@ -3854,6 +3855,13 @@ bool CFileItem::LoadDetails()
     {
       const CFileItem loadedItem{*tag};
       UpdateInfo(loadedItem);
+
+      if (tag->m_iDbId >= 0 && !tag->m_type.empty())
+      {
+        std::map<std::string, std::string> artwork;
+        if (db.GetArtForItem(tag->m_iDbId, tag->m_type, artwork))
+          AppendArt(artwork);
+      }
     }
     return ret;
   }
@@ -3888,6 +3896,13 @@ bool CFileItem::LoadDetails()
     {
       const CFileItem loadedItem{*tag};
       UpdateInfo(loadedItem);
+
+      if (tag->m_iDbId >= 0 && !tag->m_type.empty())
+      {
+        std::map<std::string, std::string> artwork;
+        if (db.GetArtForItem(tag->m_iDbId, tag->m_type, artwork))
+          AppendArt(artwork);
+      }
       return true;
     }
 
@@ -3917,6 +3932,13 @@ bool CFileItem::LoadDetails()
           {
             UpdateInfo(*item);
             *GetVideoInfoTag() = tag;
+
+            if (tag.m_iDbId >= 0 && !tag.m_type.empty())
+            {
+              std::map<std::string, std::string> artwork;
+              if (db.GetArtForItem(tag.m_iDbId, tag.m_type, artwork))
+                AppendArt(artwork);
+            }
             return true;
           }
         }
