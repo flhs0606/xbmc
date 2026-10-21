@@ -14,6 +14,7 @@
 
 #include "BitstreamReader.h"
 #include "HDR10Plus.h"
+#include "HDRVivid.h"
 
 struct DisplayPrimary {
   uint16_t x;
@@ -84,6 +85,13 @@ public:
   static const std::optional<const Hdr10PlusMetadata> ExtractHdr10Plus(
     const std::vector<CHevcSei>& messages,
     const std::vector<uint8_t>& buf);
+
+  static const std::optional<const HdrVividMetadata> ExtractHdrVivid(
+    const std::vector<CHevcSei>& messages,
+    const std::vector<uint8_t>& buf);
+
+  static const std::vector<uint8_t> RemoveHdrVividFromSeiNalu(
+      const uint8_t* inData, const size_t inDataLen);
 
   static const std::optional<MasteringDisplayColourVolume> ExtractMasteringDisplayColourVolume(
     const std::vector<CHevcSei>& messages,

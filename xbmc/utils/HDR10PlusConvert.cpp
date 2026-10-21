@@ -57,7 +57,7 @@ double nits_to_pq(double nits) {
   return std::pow((ST2084_C1 + ST2084_C2 * std::pow(y, ST2084_M1)) / (1.0 + ST2084_C3 * std::pow(y, ST2084_M1)), ST2084_M2);
 }
 
-static uint16_t cast_pq(double nits) {
+uint16_t cast_pq(double nits) {
   return static_cast<uint16_t>(std::round(nits_to_pq(nits) * 4095.0));
 }
 
@@ -141,7 +141,7 @@ static uint16_t average_pq(const Hdr10PlusMetadata& meta, const PeakBrightnessSo
   return cast_pq(static_cast<double>(meta.luminance[0].average_maxrgb) / 10.0);
 }
 
-static uint16_t clamp16(uint16_t d, uint16_t min, uint16_t max) {
+uint16_t clamp16(uint16_t d, uint16_t min, uint16_t max) {
   uint16_t t = d < min ? min : d;
   return t > max ? max : t;
 }

@@ -364,6 +364,12 @@ CBitstreamConverter::CBitstreamConverter(CDVDStreamInfo& hints)
   m_dual_priority_Hdr10Plus = false;
   m_removeDovi = false;
   m_removeHdr10Plus = false;
+  m_convert_HdrVivid = false;
+  m_prefer_HdrVivid_conversion = false;
+  m_dual_priority_HdrVivid = false;
+  m_removeHdrVivid = false;
+  m_pendingVividConvert = false;
+  m_pendingVividMeta.reset();
   m_combine = false;
   m_first_frame = true;
   m_hdrStaticMetadataInfo = {};
@@ -550,6 +556,9 @@ void CBitstreamConverter::Close()
   m_convert_bytestream = false;
   m_convert_3byteTo4byteNALSize = false;
   m_combine = false;
+
+  m_pendingVividMeta.reset();
+  m_pendingVividConvert = false;
 }
 
 bool CBitstreamConverter::Convert(uint8_t* pData, int iSize, double pts)
@@ -1100,10 +1109,38 @@ void CBitstreamConverter::ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, u
 
 void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta) {
 
-  bool copy = true;
+  // Corrupt / undersized NAL: pass through to the kernel decoder rather
+  // than silently dropping it. Dropping any SEI here can strip critical
+  // signalling such as alternative_transfer_characteristics (type 147)
+  // used by HLG streams, which would cause the decoder to fall back to
+  // the VUI BT.709 transfer and output SDR.
+  if (nal_size < 9)
+  {
+    BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
+    return;
+  }
 
   std::vector<uint8_t> clearBuf;
   auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(buf, nal_size, clearBuf);
+
+  // Fast-path: if this SEI NAL carries none of the payload types we actually
+  // process (4 = user_data_registered_itu_t_t35 for HDR10+ / HDR Vivid,
+  // 137 = mastering_display_colour_volume, 144 = content_light_level_info),
+  // pass it through unchanged. This skips the Extract* work while preserving
+  // every SEI the kernel decoder still needs - e.g. pic_timing (1),
+  // recovery_point (6), frame_field_info (45/168), time_code (136), and
+  // critically alternative_transfer_characteristics (147) for HLG.
+  const bool anyInteresting = std::any_of(messages.begin(), messages.end(),
+    [](const CHevcSei& s) {
+      return s.m_payloadType == 4 || s.m_payloadType == 137 || s.m_payloadType == 144;
+    });
+  if (!anyInteresting)
+  {
+    BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
+    return;
+  }
+
+  bool copy = true;
 
   bool updateMetadata = false;
 
@@ -1117,8 +1154,69 @@ void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8
   {
     UpdateHdrStaticMetadata();
     aml_dv_send_hdr10_data();
-  } 
+  }
 
+  // ----- HDR Vivid detection and RPU conversion -----
+  if (auto vividRes = CHevcSei::ExtractHdrVivid(messages, clearBuf))
+  {
+    aml_kodi_set_cd_cs(2);
+
+    bool isDual = (m_initial_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
+    bool considerAsVivid = (!isDual || m_dual_priority_HdrVivid || m_prefer_HdrVivid_conversion);
+
+    // When Vivid metadata is being stripped (disable mode or DV priority),
+    // the stream degrades to plain HDR10 — do NOT set hdrType to Vivid,
+    // otherwise VS10 / transfer_pq / osd_pq_bypass won't treat it as HDR10.
+    bool removeVivid = m_removeHdrVivid || (isDual && !considerAsVivid);
+
+    if (m_first_frame)
+    {
+      if (considerAsVivid && !removeVivid)
+      {
+        m_hints.hdrType = StreamHdrType::HDR_TYPE_HDRVIVID;
+        m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_HDRVIVID);
+        if (isDual)
+          m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
+      }
+      else
+      {
+        if (isDual)
+          m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_HDRVIVID);
+      }
+    }
+
+    bool convert = (considerAsVivid && m_convert_HdrVivid && !m_dual_priority_HdrVivid && !removeVivid);
+
+    if (convert || removeVivid)
+    {
+      auto nalu = CHevcSei::RemoveHdrVividFromSeiNalu(buf, nal_size);
+      if (!nalu.empty())
+      {
+        uint32_t prevSize = static_cast<uint32_t>(*poutbuf_size);
+        BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, nalu.data(), nalu.size(), HEVC_NAL_SEI_PREFIX);
+        // Guard against OOM in av_realloc: if the buffer pointer went NULL
+        // while size grew, we're in an unrecoverable state.
+        if (*poutbuf == NULL && *poutbuf_size > 0)
+        {
+          CLog::Log(LOGERROR, "CBitstreamConverter::ProcessSeiPrefix - OOM in Vivid SEI removal path; discarding frame");
+          *poutbuf_size = static_cast<int>(prevSize);
+          return;
+        }
+      }
+      copy = false;
+    }
+
+    if (convert)
+    {
+      // Store Vivid metadata for RPU injection at end of access unit
+      m_pendingVividMeta = vividRes.value();
+      m_pendingVividConvert = true;
+    }
+  }
+
+  // Only check HDR10+ if Vivid did not already consume this SEI NAL
+  if (!m_pendingVividConvert && copy)
+  {
   if (auto res = CHevcSei::ExtractHdr10Plus(messages, clearBuf)) {
 
     aml_kodi_set_cd_cs(2);
@@ -1154,6 +1252,7 @@ void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8
       copy = false;
     }
   }
+  } // !m_pendingVividConvert && copy guard
 
   if (copy) BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
 }
@@ -1174,6 +1273,11 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
 
   Hdr10PlusMetadata hdr10plus_meta;
   bool convert_hdr10plus_meta = false;
+
+  // Reset Vivid conversion state on every access unit to avoid stale RPU
+  // injection from a previously aborted conversion (e.g. goto fail).
+  m_pendingVividConvert = false;
+  m_pendingVividMeta.reset();
 
   std::vector<uint8_t> finalPrefixSeiNalu;
 
@@ -1253,7 +1357,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
           break;
 
         case HEVC_NAL_UNSPEC62: // DoVi RPU
-          if (!m_removeDovi && !convert_hdr10plus_meta)
+          if (!m_removeDovi && !convert_hdr10plus_meta && !m_pendingVividConvert)
             ProcessDoViRpu(buf, nal_size, poutbuf, poutbuf_size, pts);
           break;
 
@@ -1276,7 +1380,13 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
   if (convert_hdr10plus_meta)
     AddDoViRpuNalu(hdr10plus_meta, poutbuf, poutbuf_size, pts);
 
+  // If converting hdr vivid - add the DoVi RPU as the last NALU in the access unit.
+  if (m_pendingVividConvert && m_pendingVividMeta.has_value())
+    AddDoViRpuNaluFromVivid(m_pendingVividMeta.value(), poutbuf, poutbuf_size);
+
   m_first_frame = false;
+  m_pendingVividConvert = false;
+  m_pendingVividMeta.reset();
 
   return true;
 

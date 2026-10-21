@@ -34,6 +34,8 @@ set(SOURCES ActorProtocol.cpp
             HDR10.cpp
             HDR10Plus.cpp
             HDR10PlusConvert.cpp
+            HDRVivid.cpp
+            HDRVividConvert.cpp
             DoViRpuWriter.cpp
             HevcSei.cpp
             HTMLUtil.cpp

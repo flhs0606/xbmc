@@ -8,6 +8,7 @@
 
 #include "HevcSei.h"
 #include "HDR10Plus.h"
+#include "HDRVivid.h"
 
 void HevcAddStartCodeEmulationPrevention3Byte(std::vector<uint8_t>& buf)
 {
@@ -74,8 +75,10 @@ int CHevcSei::ParseSeiMessage(CBitstreamReader& br, std::vector<CHevcSei>& messa
   sei.m_payloadSize += lastPayloadSizeByte;
   sei.m_payloadOffset = br.Position() / 8;
 
-  // Invalid size
-  if (sei.m_payloadSize > br.AvailableBits())
+  // Invalid size — guard against corrupt NALs where payload size is zero
+  // (which would cause an infinite loop in ParseSeiRbspInternal since
+  // SkipBits(0) does not advance the bitstream position)
+  if (sei.m_payloadSize == 0 || sei.m_payloadSize > br.AvailableBits())
     return 1;
 
   br.SkipBits(sei.m_payloadSize * 8);
@@ -186,6 +189,102 @@ const std::optional<const Hdr10PlusMetadata> CHevcSei::ExtractHdr10Plus(
   return std::nullopt;
 }
 
+// Validates that a User-Data-Registered ITU-T T.35 SEI payload is HDR
+// Vivid (CUVA 005.1:2022).  The reader is positioned at the start of the
+// payload (itu_t_t35_country_code) on entry and is consumed by this call;
+// callers that need a full re-parse must construct a fresh reader.
+static bool IsHdrVividSeiPayload(CBitstreamReader& br, size_t payloadSize)
+{
+  // Minimum bytes needed to safely parse one window:
+  //   5  T.35 header (country + provider + oriented)
+  //   1  system_start_code
+  //   6  four 12-bit maxrgb values
+  //   1  tone_mapping_mode_flag
+  //   1  color_saturation_mapping_flag
+  // = 14 bytes total
+  if (payloadSize < 14)
+    return false;
+
+  const auto countryCode = br.ReadBits(8);
+  const auto providerCode = br.ReadBits(16);
+  const auto orientedCode = br.ReadBits(16);
+
+  if (countryCode != 0x26 || providerCode != 0x0004 || orientedCode != 0x0005)
+    return false;
+
+  const auto systemStartCode = br.ReadBits(8);
+  return systemStartCode >= 0x01 && systemStartCode <= 0x07;
+}
+
+// Returns the first HDR Vivid SEI in `messages`, or nullptr if none.
+// `payloadBuf` provides the buffer against which m_payloadOffset resolves.
+static const CHevcSei* FindHdrVividSeiMessage(const std::vector<CHevcSei>& messages,
+                                               const std::vector<uint8_t>& payloadBuf)
+{
+  for (const CHevcSei& sei : messages)
+  {
+    if (sei.m_payloadType == 4)
+    {
+      CBitstreamReader br(payloadBuf.data() + sei.m_payloadOffset, sei.m_payloadSize);
+      if (IsHdrVividSeiPayload(br, sei.m_payloadSize))
+        return &sei;
+    }
+  }
+  return nullptr;
+}
+
+const std::optional<const HdrVividMetadata> CHevcSei::ExtractHdrVivid(
+  const std::vector<CHevcSei>& messages,
+  const std::vector<uint8_t>& buf)
+{
+  if (const CHevcSei* sei = FindHdrVividSeiMessage(messages, buf))
+  {
+    CBitstreamReader br(buf.data() + sei->m_payloadOffset, sei->m_payloadSize);
+    return hdr_vivid_sei_to_metadata(br);
+  }
+  return std::nullopt;
+}
+
+const std::vector<uint8_t> CHevcSei::RemoveHdrVividFromSeiNalu(const uint8_t* inData, const size_t inDataLen)
+{
+  std::vector<uint8_t> buf;
+  std::vector<CHevcSei> messages = CHevcSei::ParseSeiRbspUnclearedEmulation(inData, inDataLen, buf);
+
+  const CHevcSei* vividSei = FindHdrVividSeiMessage(messages, buf);
+
+  if (!vividSei)
+  {
+    buf.clear();
+    return buf;
+  }
+
+  if (messages.size() > 1)
+  {
+    // Guard against corrupt NALs with invalid offsets
+    if (vividSei->m_msgOffset <= buf.size() &&
+        vividSei->m_payloadOffset + vividSei->m_payloadSize <= buf.size() &&
+        vividSei->m_msgOffset <= vividSei->m_payloadOffset + vividSei->m_payloadSize)
+    {
+      // Multiple SEI messages: erase only the Vivid one from cleared buffer
+      buf.erase(std::next(buf.begin(), vividSei->m_msgOffset),
+                std::next(buf.begin(), vividSei->m_payloadOffset + vividSei->m_payloadSize));
+      HevcAddStartCodeEmulationPrevention3Byte(buf);
+    }
+    else
+    {
+      // Offsets out of range — discard everything to be safe
+      buf.clear();
+    }
+  }
+  else
+  {
+    // Single SEI message: the whole payload was Vivid, discard
+    buf.clear();
+  }
+
+  return buf;
+}
+
 const std::optional<MasteringDisplayColourVolume> CHevcSei::ExtractMasteringDisplayColourVolume(
   const std::vector<CHevcSei>& messages,
   const std::vector<uint8_t>& buf) {
@@ -254,10 +353,21 @@ const std::vector<uint8_t> CHevcSei::RemoveHdr10PlusFromSeiNalu(const uint8_t* i
     auto msg = *res;
     if (messages.size() > 1)
     {
-      // Multiple SEI messages in NALU, remove only the HDR10+ one
-      buf.erase(std::next(buf.begin(), msg->m_msgOffset),
-                std::next(buf.begin(), msg->m_payloadOffset + msg->m_payloadSize));
-      HevcAddStartCodeEmulationPrevention3Byte(buf);
+      // Guard against corrupt NALs with invalid offsets
+      if (msg->m_msgOffset <= buf.size() &&
+          msg->m_payloadOffset + msg->m_payloadSize <= buf.size() &&
+          msg->m_msgOffset <= msg->m_payloadOffset + msg->m_payloadSize)
+      {
+        // Multiple SEI messages in NALU, remove only the HDR10+ one
+        buf.erase(std::next(buf.begin(), msg->m_msgOffset),
+                  std::next(buf.begin(), msg->m_payloadOffset + msg->m_payloadSize));
+        HevcAddStartCodeEmulationPrevention3Byte(buf);
+      }
+      else
+      {
+        // Offsets out of range — discard everything to be safe
+        buf.clear();
+      }
     }
     else
     {
