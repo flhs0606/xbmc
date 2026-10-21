@@ -25,6 +25,23 @@
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
 
+namespace
+{
+constexpr int FEL_SEEK_FIX_DETECTION_PAIRS = 4;
+
+bool IsNoPts(double pts)
+{
+  return pts == DVD_NOPTS_VALUE;
+}
+
+double PacketTime(double pts, double dts)
+{
+  return !IsNoPts(pts) ? pts : dts;
+}
+
+
+} // namespace
+
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
 {
   CLog::Log(LOGDEBUG, "CAMLVideoBufferPool::~CAMLVideoBufferPool: Deleting {:d} buffers", static_cast<unsigned int>(m_videoBuffers.size()) );
@@ -75,7 +92,9 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
   {
     if (const auto settings = settingsComponent->GetSettings())
     {
-      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND});
+      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,
+                                       CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,
+                                       CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM});
       m_settingsCallbackRegistered = true;
     }
   }
@@ -103,15 +122,26 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
   const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
   if (!settings) return;
 
-  m_appendCMv40ModeSetting.store(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND));
+  int appendCMv40 = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
+  if (aml_dv_type() != DV_TYPE_DISPLAY_LED)
+    appendCMv40 = 0;
+
+  if (appendCMv40 != 0)
+  {
+    m_smartDisplayNits.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
+  }
+
+  m_appendCMv40ModeSetting.store(static_cast<int>(appendCMv40 != 0 ?
+      DOVICMv40Mode::CMV40_SMART : DOVICMv40Mode::CMV40_NONE));
 }
 
 void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
   if (!setting) return;
 
-  if (setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND)
+  if (setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)
     UpdateAppendCMv40SettingCache();
 }
 
@@ -122,11 +152,87 @@ void CDVDVideoCodecAmlogic::ApplyDynamicDoViSettings()
   const auto mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
   if (mode == m_appendCMv40ModeApplied) return;
 
-  m_bitstream->SetAppendCMv40(mode);
-  m_appendCMv40ModeApplied = mode;
+  PushCMv40Settings(mode);
 
   logM(LOGINFO, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 append mode changed to [{:d}]",
        static_cast<int>(mode));
+}
+
+void CDVDVideoCodecAmlogic::PushCMv40Settings(DOVICMv40Mode mode)
+{
+  if (mode == DOVICMv40Mode::CMV40_SMART)
+  {
+    m_bitstream->SetSmartBypassDisplayNits(m_smartDisplayNits.load());
+  }
+
+  m_bitstream->SetAppendCMv40(mode);
+  m_appendCMv40ModeApplied = mode;
+}
+
+bool CDVDVideoCodecAmlogic::IsDvP7FelStream() const
+{
+  return m_bitstream && m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+         m_hints.dovi.dv_profile == 7 && m_hints.dovi_el_type == DOVIELType::TYPE_FEL;
+}
+
+CDVDVideoCodecAmlogic::FelSeekFixSettings CDVDVideoCodecAmlogic::GetFelSeekFixSettings() const
+{
+  FelSeekFixSettings settings;
+
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto advancedSettings = settingsComponent ? settingsComponent->GetAdvancedSettings() : nullptr;
+  if (!advancedSettings)
+    return settings;
+
+  settings.enabled = advancedSettings->m_videoFelSeekFix;
+  if (advancedSettings->m_videoFelSeekFixThresholdFrames > 0)
+    settings.thresholdFrames = advancedSettings->m_videoFelSeekFixThresholdFrames;
+
+  return settings;
+}
+
+bool CDVDVideoCodecAmlogic::CanRunFelSeekFixDetection() const
+{
+  return m_felSeekFixSettings.enabled && IsDvP7FelStream() &&
+         m_userConvertDoviMode == DOVIMode::MODE_NONE && !m_felSeekFixActive;
+}
+
+void CDVDVideoCodecAmlogic::ArmFelSeekFixDetection()
+{
+  m_felSeekFixDetectionPairsAfterReset = 0;
+  m_felSeekFixSettings = GetFelSeekFixSettings();
+
+  if (CanRunFelSeekFixDetection())
+    m_felSeekFixDetectionPairsAfterReset = FEL_SEEK_FIX_DETECTION_PAIRS;
+
+  CLog::Log(LOGDEBUG,
+            "{} FEL_SEEK_FIX detection armed: pairs={} enabled={} thresholdFrames={} userConvertDovi={} hdr={} profile={} el={} bitstream={}",
+            __FUNCTION__, m_felSeekFixDetectionPairsAfterReset, m_felSeekFixSettings.enabled,
+            m_felSeekFixSettings.thresholdFrames, static_cast<int>(m_userConvertDoviMode),
+            static_cast<int>(m_hints.hdrType), m_hints.dovi.dv_profile,
+            static_cast<int>(m_hints.dovi_el_type), static_cast<bool>(m_bitstream));
+}
+
+void CDVDVideoCodecAmlogic::EnableFelSeekFix(double ptsBl,
+                                             double dtsBl,
+                                             double ptsEl,
+                                             double dtsEl,
+                                             double timeDeltaMs,
+                                             double thresholdMs,
+                                             int pairsLeft)
+{
+  if (!CanRunFelSeekFixDetection())
+    return;
+
+  m_bitstream->SetConvertDovi(DOVIMode::MODE_TOMEL);
+  m_felSeekFixActive = true;
+  m_felSeekFixDetectionPairsAfterReset = 0;
+
+  CLog::Log(LOGINFO,
+            "CDVDVideoCodecAmlogic FEL_SEEK_FIX fallback enabled after {}: BL pts {:.3f} dts {:.3f}, EL pts {:.3f} dts {:.3f}, time-delta {:.3f} ms > threshold {:.3f} ms ({} frames), detectPairsLeft {}",
+            "seek", ptsBl / DVD_TIME_BASE, dtsBl / DVD_TIME_BASE, ptsEl / DVD_TIME_BASE,
+            dtsEl / DVD_TIME_BASE, timeDeltaMs, thresholdMs,
+            m_felSeekFixSettings.thresholdFrames, pairsLeft);
 }
 
 std::unique_ptr<CDVDVideoCodec> CDVDVideoCodecAmlogic::Create(CProcessInfo& processInfo)
@@ -361,28 +467,42 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       {
         auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
-        bool dualPriorityHdr10Plus = (settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY) == 1);
+        int dualPriorityValue = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
+        bool dualPriorityHdr10Plus = (dualPriorityValue == 1);
+        bool dualPriorityHdrVivid  = (dualPriorityValue == 2);
+        // Strip Vivid metadata when the user disabled Vivid and Vivid does
+        // not have priority.  Used by both the DV and HDR10 paths below.
+        const bool vividDisabled =
+            (dualPriorityValue != 2) &&
+            settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_DISABLE);
 
         if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
         {
-          auto cmv40Mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
+          const auto cmv40Mode =
+              static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
           if (cmv40Mode != DOVICMv40Mode::CMV40_NONE)
+            PushCMv40Settings(cmv40Mode);
+
+          // Global Vivid disable: strip Vivid metadata regardless of priority.
+          // Only applies when Vivid does NOT have priority (dual_priority != 2).
+          if (vividDisabled)
           {
-            if (cmv40Mode == DOVICMv40Mode::CMV40_NO_L2)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - if CMv2.9 without L2 trims then CMv4.0 metadata block will be appended.");
-            else if (cmv40Mode != DOVICMv40Mode::CMV40_ALWAYS)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 metadata block will always be appended.");
-            else if (cmv40Mode != DOVICMv40Mode::CMV40_AUTO)
-              logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "DV HEVC bitstream - CMv4.0 metadata block will be appended automatically based on L2 and display max lum.");
-            m_bitstream->SetAppendCMv40(cmv40Mode);
+            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - HDR Vivid is disabled; removing Vivid metadata if present.",
+                      __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetRemoveHdrVivid(true);
           }
-          m_appendCMv40ModeApplied = cmv40Mode;
 
           if (dualPriorityHdr10Plus)
           {
             CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, native HDR10+ has priority.",
                       __MODULE_NAME__, __FUNCTION__);
             m_bitstream->SetDualPriorityHdr10Plus(true);
+          }
+          else if (dualPriorityHdrVivid)
+          {
+            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR Vivid, native HDR Vivid has priority.",
+                      __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetDualPriorityHdrVivid(true);
           }
           else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT)) 
           {
@@ -393,15 +513,24 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
               CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, conversion will be prefered over original Dolby Vision.",
                         __MODULE_NAME__, __FUNCTION__);
           }
+          else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+          {
+            bool preferConvertHdrVivid = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT);
+            m_bitstream->SetPreferCovertHdrVivid(preferConvertHdrVivid);
+
+            if (preferConvertHdrVivid)
+              CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR Vivid, conversion will be prefered over original Dolby Vision.",
+                        __MODULE_NAME__, __FUNCTION__);
+          }
 
           if (m_hints.dovi.dv_profile == 7)
           {
-            DOVIMode convertDovi = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
-            if (convertDovi)
+            m_userConvertDoviMode = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
+            if (m_userConvertDoviMode != DOVIMode::MODE_NONE)
             {
               CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - user chooses to convert to mode [{:d}]",
-                        __MODULE_NAME__, __FUNCTION__, convertDovi);
-              m_bitstream->SetConvertDovi(convertDovi);
+                        __MODULE_NAME__, __FUNCTION__, static_cast<int>(m_userConvertDoviMode));
+              m_bitstream->SetConvertDovi(m_userConvertDoviMode);
             }
           }
         }
@@ -416,6 +545,23 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(peakBrightnessSource);
         }
 
+        // Potential HDR Vivid (Cannot tell at this point)
+        // Check disable flag first — when disabled, strip all Vivid metadata
+        // and degrade to plain HDR10.  This is only applicable when priority
+        // is DV (0) or HDR10+ (1), i.e. Vivid does NOT have priority.
+        if (vividDisabled)
+        {
+          CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then metadata will be removed and content downgraded to HDR10.",
+                    __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetRemoveHdrVivid(true);
+        }
+        else if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+        {
+          CLog::Log(LOGDEBUG, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then will be converted to Dolby Vision P8.1",
+            __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetConvertHdrVivid(true);
+        }
+
         // If HDR10 or Dual Priority HDR10+ and doing VS10 - remove the HDR10+ and DV if present to avoid conflict with VS10.
         if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) || dualPriorityHdr10Plus)
         {
@@ -426,6 +572,26 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR10+ then metadata will be removed to allow correct VS10 processing",
               __MODULE_NAME__, __FUNCTION__);
             m_bitstream->SetRemoveHdr10Plus(true);
+            m_bitstream->SetRemoveDovi(true);
+          }
+        }
+
+        // If HDR10 or Dual Priority HDR Vivid and doing VS10 — remove the
+        // Vivid and DV if present to avoid conflict with VS10.
+        //
+        // NOTE: Do NOT include vividDisabled here.  vividDisabled means
+        // "strip Vivid, degrade to HDR10" which is handled by
+        // SetRemoveHdrVivid() above.  Adding it here would also trigger
+        // SetRemoveDovi() for pure DV streams (P5/P8) that carry no
+        // Vivid metadata — accidentally killing legitimate Dolby Vision.
+        if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) || dualPriorityHdrVivid)
+        {
+          unsigned int mode(aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS));
+          if (mode < DOLBY_VISION_OUTPUT_MODE_BYPASS)
+          {
+            CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR Vivid then metadata will be removed to allow correct VS10 processing",
+              __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetRemoveHdrVivid(true);
             m_bitstream->SetRemoveDovi(true);
           }
         }
@@ -502,97 +668,24 @@ void CDVDVideoCodecAmlogic::Close(void)
 
   m_opened = false;
 
+  m_felSeekFixActive = false;
+  m_felSeekFixDetectionPairsAfterReset = 0;
+  m_felSeekFixSettings = FelSeekFixSettings{};
+  m_userConvertDoviMode = DOVIMode::MODE_NONE;
+
   while (!m_packages.empty())
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
-  m_last_added = true;
-  m_last_pData = nullptr;
-  m_last_iSize = 0;
+    PopFrontPackage();
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
 
-  if (m_bitstream && m_hints.codec == AV_CODEC_ID_H264)
+  if (m_bitstream)
     m_bitstream->ResetStartDecode();
 }
 
-bool CDVDVideoCodecAmlogic::DualLayerConvert(uint8_t *pData, uint32_t iSize, const DemuxPacket &packet)
+void CDVDVideoCodecAmlogic::PopFrontPackage()
 {
-  bool dual_layer_converted = false;
-
-  logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic", "DT-DL {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty",
-    packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
-
-  if (!m_packages.empty())
-  {
-    // convert bl and el package to single package
-    DLDemuxPacket dual_layer_packet = m_packages.front();
-    auto const& [pDataBackup, iSizeBackup, isELPackageBackup, dts] = dual_layer_packet;
-
-    if (isELPackageBackup != packet.isELPackage)
-    {
-      logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic", "found DT-DL {} package with dts: {:.3f} in list",
-        packet.isELPackage ? "BL" : "EL", dts/DVD_TIME_BASE);
-
-      if (packet.dts < dts) // prior dts arrived - out of step - remove and attempt next.
-      {
-        logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic", "discarding DT-DL {} package with dts {:.3f} as before package in list with dts: {:.3f}",
-          packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, dts/DVD_TIME_BASE);
-
-        return false;
-      }
-
-      if (packet.isELPackage)
-        dual_layer_converted = m_bitstream->Convert(pDataBackup, iSizeBackup, pData, iSize, packet.pts);
-      else
-        dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup, packet.pts);
-    }
-  }
-
-  if (!dual_layer_converted) // backup package and don't send to decoder yet
-  {
-    auto pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
-    memcpy(pDataBackup, packet.pData, packet.iSize);
-    m_packages.emplace_back(pDataBackup, iSize, packet.isELPackage, packet.dts);
-
-    logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic", "did add DT-DL {} package with dts: {:.3f}, pts: {:.3f} and size {} in list",
-      packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
-
-    return false;
-  }
-  else
-  {
-    logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic", "converted DT-DL with dts: {:.3f}, pts: {:.3f}",
-      packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE);
-
-    // All good can remove the backed up package
-    KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
-    m_packages.pop_front();
-
-    if (!m_bitstream->CanStartDecode())
-    {
-      logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
-      return false;
-    }
-  }
-
-  return true;
-}
-
-bool CDVDVideoCodecAmlogic::SingleLayerConvert(uint8_t *pData, uint32_t iSize, const DemuxPacket &packet) const {
-  if (!m_bitstream->Convert(pData, iSize, packet.pts))
-    return false;
-
-  if (!m_bitstream->CanStartDecode())
-  {
-    logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
-    return false;
-  }
-
-  return true;
+  KODI::MEMORY::AlignedFree(m_packages.front().data);
+  m_packages.pop_front();
 }
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
@@ -602,7 +695,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   uint8_t *pData(packet.pData);
   uint32_t iSize(packet.iSize);
+  bool data_added = false;
+  bool dual_layer_converted = false;
   bool set_osd_max = false;
+  double outputPts = packet.pts;
+  double outputDts = packet.dts;
 
   if (pData)
   {
@@ -610,42 +707,109 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
     if (m_bitstream)
     {
-      if (!m_last_added) // Try again
+      if (packet.isDualStream && aml_dolby_vision_enabled())
       {
-        pData = m_last_pData;
-        iSize = m_last_iSize;
+        logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+          "{} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty",
+          packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize,
+          m_packages.empty() ? "is" : "is not");
+
+        if (!m_packages.empty())
+        {
+          // Pair the queued packet with the current one to form a BL+EL pair.
+          // Convert() takes the BL as the first argument; if the queued packet
+          // is BL and the new one is EL (or vice versa), swap so the call is
+          // uniform below.
+          const DLDemuxPacket dualLayerPacket = m_packages.front();
+
+          if (dualLayerPacket.isELPackage != packet.isELPackage)
+          {
+            uint8_t* pDataBl = packet.isELPackage ? dualLayerPacket.data : pData;
+            uint32_t iSizeBl = packet.isELPackage ? dualLayerPacket.size : iSize;
+            uint8_t* pDataEl = packet.isELPackage ? pData : dualLayerPacket.data;
+            uint32_t iSizeEl = packet.isELPackage ? iSize : dualLayerPacket.size;
+            const double ptsBl = packet.isELPackage ? dualLayerPacket.pts : packet.pts;
+            const double dtsBl = packet.isELPackage ? dualLayerPacket.dts : packet.dts;
+            const double ptsEl = packet.isELPackage ? packet.pts : dualLayerPacket.pts;
+            const double dtsEl = packet.isELPackage ? packet.dts : dualLayerPacket.dts;
+            const double timeBl = PacketTime(ptsBl, dtsBl);
+            const double timeEl = PacketTime(ptsEl, dtsEl);
+            if (m_felSeekFixDetectionPairsAfterReset > 0 && CanRunFelSeekFixDetection())
+            {
+              const bool hasValidTimes = !IsNoPts(timeBl) && !IsNoPts(timeEl);
+              const double timeDelta = hasValidTimes ? fabs(timeBl - timeEl) : 0.0;
+              const double fps = (m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+                                     ? static_cast<double>(m_hints.fpsrate) / m_hints.fpsscale
+                                     : 24000.0 / 1001.0;
+              const int thresholdFrames = m_felSeekFixSettings.thresholdFrames;
+              const double staleElThreshold = DVD_TIME_BASE * static_cast<double>(thresholdFrames) / fps;
+
+              m_felSeekFixDetectionPairsAfterReset--;
+              if (hasValidTimes && timeDelta > staleElThreshold)
+                EnableFelSeekFix(ptsBl, dtsBl, ptsEl, dtsEl, DVD_TIME_TO_MSEC(timeDelta),
+                                 DVD_TIME_TO_MSEC(staleElThreshold),
+                                 m_felSeekFixDetectionPairsAfterReset);
+              else if (m_felSeekFixDetectionPairsAfterReset == 0)
+                CLog::Log(LOGDEBUG,
+                          "CDVDVideoCodecAmlogic FEL_SEEK_FIX detection window closed without fallback");
+            }
+
+            outputPts = !IsNoPts(ptsBl) ? ptsBl : packet.pts;
+            outputDts = !IsNoPts(dtsBl) ? dtsBl : packet.dts;
+            logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+              "found DT-DL pair in list: bl size {}, el size {}, pts: {:.3f}",
+              iSizeBl, iSizeEl, outputPts/DVD_TIME_BASE);
+            dual_layer_converted = m_bitstream->Convert(pDataBl, iSizeBl, pDataEl, iSizeEl, outputPts);
+          }
+        }
+
+        if (!dual_layer_converted)
+        {
+          // backup package and don't send to decoder yet
+          uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
+          memcpy(pDataBackup, packet.pData, packet.iSize);
+          m_packages.push_back({pDataBackup, iSize, packet.isELPackage, packet.dts, packet.pts});
+          logComponentM(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic",
+            "did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list",
+            packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
+
+          return true;
+        }
       }
       else
       {
-        if (packet.isDualStream)
-        {
-          if (!DualLayerConvert(pData, iSize, packet))
-            return true;
-        }
-        else
-        {
-          if (!SingleLayerConvert(pData, iSize, packet))
-            return true;
-        }
-        m_last_pData = pData = m_bitstream->GetConvertBuffer();
-        m_last_iSize = iSize = m_bitstream->GetConvertSize();
+        if (!m_bitstream->Convert(pData, iSize, packet.pts))
+          return true;
       }
+
+      // For single-layer content, guard on CanStartDecode (IDR detection).
+      // Dual-layer (FEL P7) conversion outputs combined BL+EL bitstream that
+      // may start mid-GOP (e.g. ISO playlists with non-zero start PTS);
+      // the hardware Amlogic decoder handles its own IDR wait — skip the
+      // software-level guard to avoid discarding pre-IDR access units.
+      if (!m_bitstream->CanStartDecode() && !dual_layer_converted)
+      {
+        logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitstream)");
+        return true;
+      }
+      pData = m_bitstream->GetConvertBuffer();
+      iSize = m_bitstream->GetConvertSize();
     }
     else if (!m_has_keyframe && m_bitparser)
     {
       if (!m_bitparser->CanStartDecode(pData, iSize))
       {
-        CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitparser)", __FUNCTION__);
+        logM(LOGDEBUG, "CDVDVideoCodecAmlogic", "waiting for keyframe (bitparser)");
         return true;
       }
       else
         m_has_keyframe = true;
     }
-    FrameRateTracking( pData, iSize, packet.dts, packet.pts);
+    FrameRateTracking( pData, iSize, outputDts, outputPts);
 
     if (!m_opened)
     {
-      if (packet.pts == DVD_NOPTS_VALUE)
+      if (outputPts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
@@ -659,7 +823,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  m_last_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+  data_added = m_Codec->AddData(pData, iSize, outputDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : outputPts);
+
+  // pop package only from list if hardware decoder did accept the data
+  if (data_added && dual_layer_converted)
+    PopFrontPackage();
 
   // Make change in luminance as late a possible to try and avoid starting change in luminance in menu.
   if (set_osd_max)
@@ -668,7 +836,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     if (aml_dv_mode() == DV_MODE_ON) aml_dv_set_osd_max(0);
   }
 
-  return m_last_added;
+  return data_added;
 }
 
 void CDVDVideoCodecAmlogic::Reset(void)
@@ -676,19 +844,13 @@ void CDVDVideoCodecAmlogic::Reset(void)
   m_Codec->Reset();
 
   while (!m_packages.empty())
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
-  m_last_added = true;
-  m_last_pData = nullptr;
-  m_last_iSize = 0;
+    PopFrontPackage();
+
+  ArmFelSeekFixDetection();
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
-  if (m_bitstream && m_hints.codec == AV_CODEC_ID_H264)
+  if (m_bitstream)
     m_bitstream->ResetStartDecode();
 }
 

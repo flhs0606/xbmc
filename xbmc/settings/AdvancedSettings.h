@@ -395,6 +395,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     float m_videoDecoderStreamBuffer;
     float m_videoDecoderMinimumBuffer;
     float m_videoDecoderMinimumStreamBuffer;
+    bool m_videoFelSeekFix;
+    int m_videoFelSeekFixThresholdFrames;
 
     void SetAlgoForReset(int num_resets);
     int GetAlgoForReset() const;
