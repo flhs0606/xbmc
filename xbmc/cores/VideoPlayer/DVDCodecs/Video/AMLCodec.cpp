@@ -1882,9 +1882,21 @@ bool CAMLCodec::OpenDecoder(bool restart)
   am_private->gcodec.dec_mode    = STREAM_TYPE_FRAME;
   am_private->gcodec.video_path  = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
 
+  if (hints.hdrType == StreamHdrType::HDR_TYPE_HDR_VIVID)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    if (settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT))
+    {
+      hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+      hints.dovi.dv_profile = 8;
+      hints.dovi.dv_bl_signal_compatibility_id = 1;
+      CLog::Log(LOGINFO, "AMLCodec::ConfigDecoder - HDR Vivid stream converted to Dolby Vision Profile 8.1 for Amlogic hardware pipeline");
+    }
+  }
+
   if (!restart)
   {
-    aml_dv_open(m_hints.hdrType, m_hints.bitdepth, m_hints.colorPrimaries);
+    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries);
   }
 
   SetProcessInfoVideoDetails();

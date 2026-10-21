@@ -845,3 +845,44 @@ void CBitstreamConverter::AddDoViRpuNalu(const Hdr10PlusMetadata& meta,
   BitstreamAllocAndCopy(poutbuf, poutbufSize, nullptr, 0, nalu.data(),
                         static_cast<uint32_t>(nalu.size()), HEVC_NAL_UNSPEC62);
 }
+
+void CBitstreamConverter::AddDoViRpuNaluFromVividWrap(const HdrVividMetadata& meta,
+                                                          uint8_t** poutbuf,
+                                                          uint32_t& poutbufSize,
+                                                          double pts)
+{
+  int intPoutbufSize = static_cast<int>(poutbufSize);
+  AddDoViRpuNaluFromVivid(meta, poutbuf, &intPoutbufSize, pts);
+  poutbufSize = static_cast<uint32_t>(intPoutbufSize);
+}
+
+void CBitstreamConverter::AddDoViRpuNaluFromVivid(const HdrVividMetadata& meta,
+                                                  uint8_t** poutbuf,
+                                                  int* poutbufSize,
+                                                  double pts)
+{
+  auto nalu = create_dovi_rpu_nalu_from_vivid(meta, m_hdrStaticMetadataInfo);
+
+  if (nalu.empty())
+    return;
+
+  if (m_first_frame)
+  {
+    m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+    m_hints.dovi.dv_version_major = 1;
+    m_hints.dovi.dv_version_minor = 0;
+    m_hints.dovi.dv_profile = 8;
+    m_hints.dovi.dv_level = 6;
+    m_hints.dovi.rpu_present_flag = 1;
+    m_hints.dovi.el_present_flag = 0;
+    m_hints.dovi.bl_present_flag = 1;
+    m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+  }
+
+  GetDoviRpuInfo(nalu.data(), static_cast<uint32_t>(nalu.size()), m_first_frame, m_hints.dovi_el_type,
+                m_hints.dovi, pts, m_dataCacheCore, m_hints.is_dual_track, m_doviMetaVerMemo,
+                m_doviSrcMetaVerMemo);
+
+  BitstreamAllocAndCopy(poutbuf, poutbufSize, nullptr, 0, nalu.data(),
+                        static_cast<uint32_t>(nalu.size()), HEVC_NAL_UNSPEC62);
+}

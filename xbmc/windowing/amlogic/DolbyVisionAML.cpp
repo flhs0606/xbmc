@@ -664,6 +664,8 @@ bool CDolbyVisionAML::Setup()
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT, true);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT, true);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PEAK_BRIGHTNESS_SOURCE, true);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT, true);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT, true);
   set_visible(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI, true);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND, true);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER, true);
@@ -684,6 +686,8 @@ bool CDolbyVisionAML::Setup()
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDRHLG);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
@@ -849,6 +853,14 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
     set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT)
+  {
+    set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_CONVERT)
+  {
+    set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_HDRVIVID_PREFER_CONVERT)
   {
     set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
   }

@@ -14,6 +14,7 @@
 
 #include "BitstreamReader.h"
 #include "HDR10Plus.h"
+#include "HDRVivid.h"
 
 struct DisplayPrimary {
   uint16_t x;
@@ -57,7 +58,7 @@ public:
     std::optional<MasteringDisplayColourVolume> masteringDisplayColourVolume;
     std::optional<ContentLightLevel> contentLightLevel;
     std::optional<uint8_t> alternativeTransferCharacteristics;
-    bool hdrVivid{false};
+    std::optional<HdrVividMetadata> hdrVivid;
   };
 
   CHevcSei() = default;
@@ -92,6 +93,9 @@ public:
   //      When not empty: the new NALU containing all but the HDR10+ SEI message.
   //      Otherwise: the NALU contained only one HDR10+ SEI and can be discarded.
   static const std::vector<uint8_t> RemoveHdr10PlusFromSeiNalu(
+      const uint8_t* inData, const size_t inDataLen);
+
+  static const std::vector<uint8_t> RemoveHdrVividFromSeiNalu(
       const uint8_t* inData, const size_t inDataLen);
 
  private:

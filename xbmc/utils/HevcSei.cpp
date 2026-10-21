@@ -150,7 +150,10 @@ CHevcSei::Metadata ExtractMetadata(const std::vector<CHevcSei>& messages,
         if (!metadata.hdr10Plus)
           metadata.hdr10Plus = ExtractHdr10Plus(sei, buf);
         if (!metadata.hdrVivid && IsHdrVividSeiMessage(sei, buf))
-          metadata.hdrVivid = true;
+        {
+          CBitstreamReader br(buf.data() + sei.m_payloadOffset, sei.m_payloadSize);
+          metadata.hdrVivid = hdr_vivid_sei_to_metadata(br);
+        }
         break;
       case SEI_TYPE_MASTERING_DISPLAY_COLOUR_VOLUME:
         if (!metadata.masteringDisplayColourVolume)
@@ -357,6 +360,39 @@ const std::vector<uint8_t> CHevcSei::RemoveHdr10PlusFromSeiNalu(
   else
   {
     // No HDR10+
+    buf.clear();
+  }
+
+  return buf;
+}
+
+const std::vector<uint8_t> CHevcSei::RemoveHdrVividFromSeiNalu(
+  const uint8_t* inData,
+  const size_t inDataLen)
+{
+  std::vector<uint8_t> buf;
+  auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(inData, inDataLen, buf);
+  const auto hdrVivid = std::find_if(messages.cbegin(), messages.cend(),
+                        [&buf](const CHevcSei& sei) { return IsHdrVividSeiMessage(sei, buf); });
+
+  if (hdrVivid != messages.cend())
+  {
+    if (messages.size() > 1)
+    {
+      // Multiple SEI messages in NALU, remove only the HDR Vivid one
+      buf.erase(std::next(buf.begin(), hdrVivid->m_msgOffset),
+                std::next(buf.begin(), hdrVivid->m_payloadOffset + hdrVivid->m_payloadSize));
+      HevcAddStartCodeEmulationPrevention3Byte(buf);
+    }
+    else
+    {
+      // Single SEI message in NALU
+      buf.clear();
+    }
+  }
+  else
+  {
+    // No HDR Vivid
     buf.clear();
   }
 

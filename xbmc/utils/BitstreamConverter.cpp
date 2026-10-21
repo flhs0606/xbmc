@@ -709,7 +709,10 @@ CBitstreamConverter::CBitstreamConverter(CDVDStreamInfo& hints)
   m_append_cmv40 = DOVICMv40Mode::CMV40_NONE;
   m_convert_Hdr10Plus = false;
   m_prefer_Hdr10Plus_conversion = false;
-  m_dual_priority_Hdr10Plus = false;
+  m_prefer_HdrVivid_conversion = false;
+  m_dual_priority = 0;
+  m_hasHdr10Plus = (hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
+  m_hasHdrVivid = (hints.hdrType == StreamHdrType::HDR_TYPE_HDR_VIVID);
   m_removeDovi = false;
   m_removeHdr10Plus = false;
   m_combine = false;
@@ -721,6 +724,17 @@ CBitstreamConverter::CBitstreamConverter(CDVDStreamInfo& hints)
 CBitstreamConverter::~CBitstreamConverter()
 {
   Close();
+}
+
+bool CBitstreamConverter::ShouldDropNativeDovi() const
+{
+  if (m_removeDovi)
+    return true;
+  if (m_dual_priority == 1 && (m_hasHdr10Plus || m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS))
+    return true;
+  if (m_dual_priority == 2 && (m_hasHdrVivid || m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR_VIVID))
+    return true;
+  return false;
 }
 
 void CBitstreamConverter::UpdateCMv40Auto2ThresholdPq()
@@ -1216,7 +1230,8 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       switch (nal_type) {
 
         case HEVC_NAL_UNSPEC62: // DoVi RPU
-          if (!m_removeDovi && !convert_hdr10plus_meta)
+          m_hasNativeDoviRpu = true;
+          if (!ShouldDropNativeDovi() && !convert_hdr10plus_meta && !m_convert_hdrvivid_meta)
           {
             ProcessDoViRpuWrap(buf, size, &m_convertBuffer, offset, pts);
             au_has_rpu = true;
@@ -1224,7 +1239,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
           break;
 
         default: // Package other data into HEVC_NAL_UNSPEC63 DoVi EL
-          if (!m_removeDovi && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
+          if (!ShouldDropNativeDovi() && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
             BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, HEVC_NAL_UNSPEC63);
           break;
       }
@@ -1242,8 +1257,21 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       m_lastHdr10PlusMeta = hdr10plus_meta;
       m_lastHdr10PlusMetaValid = true;
     }
-    else if (m_lastHdr10PlusMetaValid && !au_has_rpu)
+    else if (m_lastHdr10PlusMetaValid && m_convert_Hdr10Plus && m_dual_priority != 1 && !au_has_rpu)
       AddDoViRpuNaluWrap(m_lastHdr10PlusMeta, &m_convertBuffer, offset, pts);
+
+    // If converting hdr vivid - add the DoVi RPU as the last NALU in the access unit.
+    if (m_convert_hdrvivid_meta && !au_has_rpu && m_pendingVividMeta.has_value())
+    {
+      AddDoViRpuNaluFromVividWrap(*m_pendingVividMeta, &m_convertBuffer, offset, pts);
+      m_lastVividMeta = *m_pendingVividMeta;
+      m_lastVividMetaValid = true;
+      m_convert_hdrvivid_meta = false;
+    }
+    else if (m_lastVividMetaValid && m_convert_HdrVivid && m_dual_priority != 2 && !au_has_rpu && (!IsNativeDv() || m_prefer_HdrVivid_conversion))
+    {
+      AddDoViRpuNaluFromVividWrap(m_lastVividMeta, &m_convertBuffer, offset, pts);
+    }
 
     m_convertSize = offset;
     m_combine = true;
@@ -1513,7 +1541,7 @@ bool CBitstreamConverter::IsDecodeStartPoint(uint8_t unit_type, const uint8_t* n
   if (IsIDR(unit_type))
     return true;
 
-  const uint8_t nal_sps = (m_codec == AV_CODEC_ID_HEVC) ? HEVC_NAL_SPS : AVC_NAL_SPS;
+  const uint8_t nal_sps = (m_codec == AV_CODEC_ID_HEVC) ? static_cast<uint8_t>(HEVC_NAL_SPS) : static_cast<uint8_t>(AVC_NAL_SPS);
 
   if (m_hints.dovi.dv_profile != 0)
     return unit_type == nal_sps && m_first_frame;
@@ -1708,24 +1736,71 @@ void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8
   if (metadata.alternativeTransferCharacteristics)
     ApplyAlternativeTransferCharacteristics(*metadata.alternativeTransferCharacteristics);
 
-  if (metadata.hdrVivid && m_first_frame &&
-      m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-      m_hints.hdrType != StreamHdrType::HDR_TYPE_HDR10PLUS &&
-      m_hints.hdrType != StreamHdrType::HDR_TYPE_HDR_VIVID)
+  const bool isNativeDv = IsNativeDv();
+
+  if (metadata.hdrVivid)
   {
-    m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR_VIVID;
-    m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_HDR_VIVID);
-    logM(LOGINFO,
-         "HDR Vivid detected (CUVA 005.1:2021 T.35 SEI, country=0x26 provider=0x0004 "
-         "oriented=0x0005); reclassifying stream as HDR_TYPE_HDR_VIVID");
+    aml_kodi_set_cd_cs(2);
+    m_hasHdrVivid = true;
+
+    bool isDual = isNativeDv;
+    bool considerAsVivid = (!isDual || (m_dual_priority == 2) || m_prefer_HdrVivid_conversion);
+
+    if (m_first_frame)
+    {
+      if (considerAsVivid)
+      {
+        m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR_VIVID;
+        m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_HDR_VIVID);
+        if (isDual) m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
+        logM(LOGINFO,
+             "HDR Vivid detected (CUVA 005.1:2021 T.35 SEI, country=0x26 provider=0x0004 "
+             "oriented=0x0005); reclassifying stream as HDR_TYPE_HDR_VIVID");
+      }
+      else
+      {
+        if (isDual)
+        {
+          if (m_dual_priority == 0)
+          {
+            m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+            m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
+          }
+          m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_HDR_VIVID);
+        }
+      }
+    }
+
+    bool convert_vivid = (considerAsVivid && m_convert_HdrVivid && (m_dual_priority != 2));
+
+    // When DV or HDR10+ has priority over Vivid, strip Vivid metadata to prevent conflict
+    bool strip_vivid = (m_dual_priority == 0 && isDual && !m_prefer_HdrVivid_conversion) || (m_dual_priority == 1) || (!isDual && m_dual_priority == 0 && metadata.hdr10Plus);
+
+    if (convert_vivid)
+    {
+      m_pendingVividMeta = *metadata.hdrVivid;
+      m_convert_hdrvivid_meta = true;
+    }
+
+    if (convert_vivid || strip_vivid)
+    {
+      auto nalu = CHevcSei::RemoveHdrVividFromSeiNalu(buf, nal_size);
+      if (!nalu.empty())
+      {
+        BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, nalu.data(), nalu.size(), HEVC_NAL_SEI_PREFIX);
+        nalu.clear();
+      }
+      copy = false;
+    }
   }
 
   if (metadata.hdr10Plus) {
 
     aml_kodi_set_cd_cs(2);
+    m_hasHdr10Plus = true;
 
-    bool isDual = (m_initial_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION); // Original is DV and now also found HDR10+ so is dual.
-    bool considerAsHdr10Plus = (!isDual || m_dual_priority_Hdr10Plus || m_prefer_Hdr10Plus_conversion);
+    bool isDual = isNativeDv; // Original is DV and now also found HDR10+ so is dual.
+    bool considerAsHdr10Plus = (!isDual || m_dual_priority == 1 || m_prefer_Hdr10Plus_conversion);
 
     if (m_first_frame) {
       if (considerAsHdr10Plus) {
@@ -1733,18 +1808,27 @@ void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8
         m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_HDR10PLUS);
         if (isDual) m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
       } else {
-        if (isDual) m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_HDR10PLUS);
+        if (isDual) {
+          if (m_dual_priority == 0) {
+            m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+            m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
+          }
+          m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_HDR10PLUS);
+        }
       }
     }
 
-    bool convert = (considerAsHdr10Plus && m_convert_Hdr10Plus && !m_dual_priority_Hdr10Plus);
+    bool convert = (considerAsHdr10Plus && m_convert_Hdr10Plus && (m_dual_priority != 1));
+
+    // When DV or HDR Vivid has priority over HDR10+, strip HDR10+ metadata to prevent conflict
+    bool strip_10plus = (m_dual_priority == 0 && isDual && !m_prefer_Hdr10Plus_conversion) || (m_dual_priority == 2);
 
     if (convert) {
       meta = *metadata.hdr10Plus;
       convert_hdr10plus_meta = true;
     }
 
-    if (convert || m_removeHdr10Plus) {
+    if (convert || m_removeHdr10Plus || strip_10plus) {
       // Remove and carry forward remaining sei in nalu.
       auto nalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
       if (!nalu.empty())
@@ -1869,7 +1953,8 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
           break;
 
         case HEVC_NAL_UNSPEC62: // DoVi RPU
-          if (!m_removeDovi && !convert_hdr10plus_meta)
+          m_hasNativeDoviRpu = true;
+          if (!ShouldDropNativeDovi() && !convert_hdr10plus_meta && !m_convert_hdrvivid_meta)
           {
             ProcessDoViRpu(buf, nal_size, poutbuf, poutbuf_size, pts);
             au_has_rpu = true;
@@ -1877,7 +1962,7 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
           break;
 
         case HEVC_NAL_UNSPEC63: // DoVi EL
-          if (!m_removeDovi && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
+          if (!ShouldDropNativeDovi() && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
             BitstreamAllocAndCopy(poutbuf, poutbuf_size, nullptr, 0, buf, nal_size, unit_type);
           break;
 
@@ -1919,8 +2004,21 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
     m_lastHdr10PlusMeta = hdr10plus_meta;
     m_lastHdr10PlusMetaValid = true;
   }
-  else if (m_lastHdr10PlusMetaValid && !au_has_rpu)
+  else if (m_lastHdr10PlusMetaValid && m_convert_Hdr10Plus && m_dual_priority != 1 && !au_has_rpu)
     AddDoViRpuNalu(m_lastHdr10PlusMeta, poutbuf, poutbuf_size, pts);
+
+  // If converting hdr vivid - add the DoVi RPU as the last NALU in the access unit.
+  if (m_convert_hdrvivid_meta && !au_has_rpu && m_pendingVividMeta.has_value())
+  {
+    AddDoViRpuNaluFromVivid(*m_pendingVividMeta, poutbuf, poutbuf_size, pts);
+    m_lastVividMeta = *m_pendingVividMeta;
+    m_lastVividMetaValid = true;
+    m_convert_hdrvivid_meta = false;
+  }
+  else if (m_lastVividMetaValid && m_convert_HdrVivid && m_dual_priority != 2 && !au_has_rpu && (!IsNativeDv() || m_prefer_HdrVivid_conversion))
+  {
+    AddDoViRpuNaluFromVivid(m_lastVividMeta, poutbuf, poutbuf_size, pts);
+  }
 
   m_first_frame = false;
 
