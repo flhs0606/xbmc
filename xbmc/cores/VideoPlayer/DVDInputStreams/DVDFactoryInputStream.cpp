@@ -162,6 +162,16 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
       }
     }
 
+    // Re-check whether resolved URL or hint indicates a disc image
+    if (finalFileitem.IsDiscImage())
+    {
+#ifdef HAVE_LIBBLURAY
+      return std::make_shared<CDVDInputStreamBluray>(pPlayer, finalFileitem);
+#else
+      return std::make_shared<CDVDInputStreamNavigator>(pPlayer, finalFileitem);
+#endif
+    }
+
     if (finalFileitem.IsType(".m3u8"))
       return std::make_shared<CDVDInputStreamFFmpeg>(finalFileitem);
 

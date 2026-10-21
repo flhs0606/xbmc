@@ -55,6 +55,7 @@
 #include "dialogs/GUIDialogSimpleMenu.h"
 #include "events/EventLog.h"
 #include "events/NotificationEvent.h"
+#include "filesystem/CurlFile.h"
 #include "filesystem/Directory.h"
 #include "filesystem/DirectoryCache.h"
 #include "filesystem/DirectoryFactory.h"
@@ -116,6 +117,7 @@
 #include "pvr/guilib/PVRGUIActionsPlayback.h"
 #include "pvr/guilib/PVRGUIActionsPowerManagement.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/DiscSettings.h"
 #include "settings/DisplaySettings.h"
 #include "settings/MediaSettings.h"
 #include "settings/Settings.h"
@@ -2365,8 +2367,101 @@ bool CApplication::PlayStack(CFileItem& item, bool bRestart)
   return PlayFile(selectedStackPart, "", true);
 }
 
+namespace
+{
+std::string NormalizeHttpUrlForTransfer(const std::string& original)
+{
+  const CURL kodiUrl{original};
+  if (!kodiUrl.IsProtocol("http") && !kodiUrl.IsProtocol("https"))
+    return original;
+
+  std::string url{original};
+  std::string options;
+  if (const auto pos = url.find('|'); pos != std::string::npos)
+  {
+    options = url.substr(pos);
+    url.erase(pos);
+  }
+
+  std::string escaped;
+  escaped.reserve(url.size());
+  for (const char ch : url)
+  {
+    if (ch == ' ')
+      escaped += "%20";
+    else
+      escaped += ch;
+  }
+
+  using UrlPtr = std::unique_ptr<CURLU, decltype(&curl_url_cleanup)>;
+  using TextPtr = std::unique_ptr<char, decltype(&curl_free)>;
+  UrlPtr parsed{curl_url(), &curl_url_cleanup};
+  constexpr unsigned int flags = CURLU_URLENCODE | CURLU_PATH_AS_IS;
+  if (curl_url_set(parsed.get(), CURLUPART_URL, escaped.c_str(), flags) != CURLUE_OK)
+    return original;
+
+  char* value = nullptr;
+  const auto result = curl_url_get(parsed.get(), CURLUPART_URL, &value, 0);
+  TextPtr normalized{value, &curl_free};
+  if (result != CURLUE_OK || !normalized)
+    return original;
+
+  return std::string{normalized.get()} + options;
+}
+
+void NormalizeHttpUrlForPlayback(CFileItem& item)
+{
+  const std::string normalized = NormalizeHttpUrlForTransfer(item.GetDynPath());
+  if (normalized != item.GetDynPath())
+    item.SetDynPath(normalized);
+}
+
+void DetectHttpDiscImageForPlayback(CFileItem& item)
+{
+  if (item.HasProperty("httpurl.disc_image") || !item.IsInternetStream(true))
+    return;
+
+  // Fast skip: already a disc image, or PVR / live streams / disabled lookup
+  if (item.IsDiscImage() || item.IsPVR() || item.IsLiveTV() || !item.ContentLookup())
+    return;
+
+  // Fast skip: clearly a normal video container by standard video extensions
+  if (URIUtils::HasExtension(item.GetDynPath(),
+                             CServiceBroker::GetFileExtensionProvider().GetVideoExtensions()))
+    return;
+
+  // Probe redirects using CCurlFile with a short connect timeout
+  try
+  {
+    XFILE::CCurlFile curlFile;
+    curlFile.SetTimeout(5);
+    CURL url(item.GetDynURL());
+    if (curlFile.Open(url))
+    {
+      const std::string effectiveUrl = curlFile.GetURL();
+      const std::string mime = curlFile.GetHttpHeader().GetMimeType();
+      const bool isDisc = URIUtils::IsDiscImage(effectiveUrl) ||
+                          mime == "application/x-iso9660-image" ||
+                          mime == "application/x-cd-image";
+      if (isDisc)
+      {
+        CLog::LogF(LOGINFO, "HTTP ISO pre-detection: identified disc image via redirect to {}",
+                   CURL::GetRedacted(effectiveUrl));
+        item.SetProperty("httpurl.disc_image", true);
+      }
+      curlFile.Close();
+    }
+  }
+  catch (...)
+  {
+    // Ignore network probe failures; playback will proceed through standard path
+  }
+}
+} // namespace
+
 bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRestart)
 {
+  NormalizeHttpUrlForPlayback(item);
   // Ensure the MIME type has been retrieved for http:// and shout:// streams
   if (item.GetMimeType().empty())
     item.FillInMimeType();
@@ -2400,6 +2495,11 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
   {
     return false;
   }
+
+  NormalizeHttpUrlForPlayback(item);
+
+  // Pre-detect disc image for HTTP/HTTPS streams without extension or behind 302 redirects
+  DetectHttpDiscImageForPlayback(item);
 
   // if we have a stacked set of files, we need to setup our stack routines for
   // "seamless" seeking and total time of the movie etc.
@@ -2507,9 +2607,16 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
   if (!(options.startpercent > 0.0 || options.starttime > 0.0) &&
       (item.IsBDFile() || item.IsDiscImage()))
   {
+    const int discMode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+        CSettings::SETTING_DISC_PLAYBACK);
+    const bool isHttpDisc = item.IsInternetStream(true) && item.IsDiscImage();
+
     // No video selection when using external or remote players (they handle it if supported)
     const bool isSimpleMenuAllowed = [&]()
     {
+      if (isHttpDisc || discMode == BD_PLAYBACK_MAIN_TITLE)
+        return false;
+
       const std::string defaulPlayer{
           player.empty() ? m_ServiceManager->GetPlayerCoreFactory().GetDefaultPlayer(item)
                          : player};
