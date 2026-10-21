@@ -24084,6 +24084,54 @@ msgctxt "#39189"
 msgid "Available only with manual subtitle position"
 msgstr ""
 
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39202"
+msgid "Enable local subtitle movement"
+msgstr ""
+
+#. Help text for setting "Enable local subtitle movement" of label #39202
+#: system/settings/settings.xml
+msgctxt "#39203"
+msgid "When enabled, only subtitles in the lower portion of the screen will be moved. When disabled, all subtitles on the screen will be moved together."
+msgstr ""
+
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39204"
+msgid "Subtitle position from top"
+msgstr ""
+
+#. Help text for setting "Subtitle position from top" of label #39204
+#: system/settings/settings.xml
+msgctxt "#39205"
+msgid "Defines the threshold percentage from the top of screen below which subtitles are affected by local movement."
+msgstr ""
+
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39206"
+msgid "Remember subtitle offset"
+msgstr ""
+
+#. Help text for setting "Remember subtitle offset" of label #39206
+#: system/settings/settings.xml
+msgctxt "#39207"
+msgid "When enabled, the position of subtitles moved during playback is saved and restored on next playback."
+msgstr ""
+
+#. Label of setting with label #39186 "Styles for text based subtitles"
+#: system/settings/settings.xml
+msgctxt "#39208"
+msgid "Subtitle offset (remembered)"
+msgstr ""
+
+#. Help text for setting "Subtitle offset (remembered)" of label #39208
+#: system/settings/settings.xml
+msgctxt "#39209"
+msgid "Offset from default position, in percentage of screen height. Negative moves up, positive moves down."
+msgstr ""
+
 #. Help text for setting "Use system HDR/SDR brightness balance" of label #36096
 #: system/settings/settings.xml
 msgctxt "#39190"
@@ -25016,18 +25064,6 @@ msgctxt "#60094"
 msgid "HDR InfoFrame Payload. A 48 character basic hex string to specify colour primaries, white point, luminance and content light level. Leave blank to align values with the DV VSVDB."
 msgstr ""
 
-#. "Dolby Vision HDR Vivid"
-#: system/settings/settings.xml
-msgctxt "#60140"
-msgid "Convert HDR Vivid video to DV profile 8.1 during playback"
-msgstr ""
-
-#. "Dolby Vision HDR Vivid"
-#: system/settings/settings.xml
-msgctxt "#60141"
-msgid "Set to On to dynamically convert HDR Vivid video to DV profile 8.1 video during playback."
-msgstr ""
-
 #. "Dolby Vision HDR10+"
 #: system/settings/settings.xml
 msgctxt "#60101"
@@ -25094,52 +25130,16 @@ msgctxt "#60122"
 msgid "When both DV and HDR10+ video streams are present, choose conversion from HDR10+ video to DV over using the original DV video, note any FEL will be discarded in this case."
 msgstr ""
 
-#. "Video Player Sync Video Clock to Vsync"
-#: system/settings/settings.xml
-msgctxt "#60110"
-msgid "Sync playback clock to display vsync"
-msgstr ""
-
-#. "Video Player Sync Video Clock to Vsync"
-#: system/settings/settings.xml
-msgctxt "#60111"
-msgid "Synchronize video master clock directly to hardware display vsync edge interrupts for jitter-free pacing and stutter-free tempo playback."
-msgstr ""
-
-#. "Video Player Sync Video Clock to Vsync"
-#: system/settings/settings.xml
-msgctxt "#60112"
-msgid "Fallback to system clock on buffer starvation"
-msgstr ""
-
-#. "Video Player Sync Video Clock to Vsync"
-#: system/settings/settings.xml
-msgctxt "#60113"
-msgid "Temporarily disengage vsync locking when video demux buffers starve to avoid audio tempo drift."
-msgstr ""
-
-#. "Dolby Vision Master Clock Vsync Offset"
-#: system/settings/settings.xml
-msgctxt "#60606"
-msgid "Dolby Vision master clock vsync offset"
-msgstr ""
-
-#. "Dolby Vision Master Clock Vsync Offset"
-#: system/settings/settings.xml
-msgctxt "#60607"
-msgid "Fine-tune vsync lead offset in milliseconds for Dolby Vision dual-layer master clock synchronizer."
-msgstr ""
-
-#. "Dolby Vision HDR10+"
+#. "Dolby Vision HDR10+/HDR Vivid"
 #: system/settings/settings.xml
 msgctxt "#60131"
 msgid "Choose DV, HDR10+ or HDR Vivid video stream to output when multiple are present"
 msgstr ""
 
-#. "Dolby Vision HDR10+"
+#. "Dolby Vision HDR10+/HDR Vivid"
 #: system/settings/settings.xml
 msgctxt "#60132"
-msgid "When multiple dynamic HDR (DV, HDR10+, HDR Vivid) video streams or metadata are present, choose which one to prioritize."
+msgid "When DV, HDR10+ and/or HDR Vivid video streams are present, choose which video stream to output."
 msgstr ""
 
 #. "Dolby Vision HDR10+"
@@ -25156,8 +25156,14 @@ msgstr ""
 
 #. "Dolby Vision HDR Vivid"
 #: system/settings/settings.xml
-msgctxt "#60135"
-msgid "HDR Vivid"
+msgctxt "#60140"
+msgid "Convert HDR Vivid video to DV profile 8.1 during playback"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60141"
+msgid "Set to On to dynamically convert HDR Vivid video to DV profile 8.1 video during playback."
 msgstr ""
 
 #. "Dolby Vision HDR Vivid"
@@ -25170,6 +25176,54 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#60137"
 msgid "When both DV and HDR Vivid video streams are present, choose conversion from HDR Vivid video to DV over using the original DV video, note any FEL will be discarded in this case."
+msgstr ""
+
+#. CoreELEC: Amlogic vsync-driven reference clock toggle
+#: system/settings/settings.xml
+msgctxt "#60110"
+msgid "Use display vsync as playback reference clock"
+msgstr ""
+
+#. CoreELEC: Amlogic vsync-driven reference clock help
+#: system/settings/settings.xml
+msgctxt "#60111"
+msgid "Drive the playback reference clock from real HDMI vsync events instead of the system clock. Improves timing accuracy and reduces micro-hitches. Disable to fall back to the legacy system-clock based timing. Takes effect immediately; toggling during playback may cause a brief A/V glitch."
+msgstr ""
+
+#. Label for setting "coreelec.amlogic.videosync.fallback.on.stall"
+#: system/settings/settings.xml
+msgctxt "#60112"
+msgid "Latch legacy timing on a sustained vsync stall"
+msgstr ""
+
+#. Help text for setting "Latch legacy timing on a sustained vsync stall" of label #60112
+#: system/settings/settings.xml
+msgctxt "#60113"
+msgid "The reference clock automatically rides legacy elapsed-time timing during an HDMI vsync stall and resumes the kernel vsync clock when it recovers. This additionally latches legacy timing for the rest of the playback once a stall is confirmed sustained, beyond any plausible mode switch, avoiding the periodic re-probe on chronically wedged HDMI chains such as some AVR or repeater setups. Disable to keep re-probing for recovery for as long as the stall lasts. Default on; resets on stop."
+msgstr ""
+
+#. Notification body shown when the sustained-vsync-stall fallback latches legacy timing
+#: xbmc/windowing/amlogic/VideoSyncAML.cpp
+msgctxt "#60114"
+msgid "Switched to legacy timing"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid"
+#: system/settings/settings.xml
+msgctxt "#60135"
+msgid "HDR Vivid"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid disable"
+#: system/settings/settings.xml
+msgctxt "#60136"
+msgid "Disable HDR Vivid"
+msgstr ""
+
+#. "Dolby Vision HDR Vivid disable help"
+#: system/settings/settings.xml
+msgctxt "#60137"
+msgid "Enable this setting to strip all HDR Vivid dynamic metadata from the bitstream, degrading the content to standard HDR10. Conversion to Dolby Vision from HDR Vivid will be unavailable when this is enabled."
 msgstr ""
 
 #. "Dolby Vision Display Led Source Levels Metadata"
@@ -25319,7 +25373,7 @@ msgstr ""
 #. Help text for setting "CMv4.0 append setting" of label #50320
 #: system/settings/settings.xml
 msgctxt "#60321"
-msgid "Controls when CMv4.0 is appended to Dolby Vision profile 7 & 8 RPU during playback."
+msgid "Enables CoreELEC to add CMv4.0 metadata to Dolby Vision streams, improving HDR tone-mapping accuracy on TVs that support Display-LED. Only disable this if you see flickering, color shifts, or brightness anomalies."
 msgstr ""
 
 #. "CMv4.0 append"
@@ -25331,19 +25385,7 @@ msgstr ""
 #. "CMv4.0 append"
 #: system/settings/settings.xml
 msgctxt "#60323"
-msgid "CMv2.9 without L2 trims"
-msgstr ""
-
-#. "CMv4.0 append"
-#: system/settings/settings.xml
-msgctxt "#60324"
-msgid "Always"
-msgstr ""
-
-#. "CMv4.0 append"
-#: system/settings/settings.xml
-msgctxt "#60325"
-msgid "Auto"
+msgid "On"
 msgstr ""
 
 #. "Dolby Vision Display LL Dolby VSVDB Limit"
@@ -25967,6 +26009,18 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#60603"
 msgid "Set this option to let the software automatically select between using normal Player Led versus Video Processor (VP) settings depending on your Display Max Lum capability (shown below) and the DV Video mastered MDL. When VP is in use the OSD will be a different colour. This feature only works with DV Mode On Demand."
+msgstr ""
+
+#. Title of master clock start offset setting
+#: system/settings/settings.xml
+msgctxt "#60606"
+msgid "Master clock start offset (ms)"
+msgstr ""
+
+#. Help text for setting "Master clock start offset (ms)" of label #60606
+#: system/settings/settings.xml
+msgctxt "#60607"
+msgid "Offsets the vsync-aligned master clock startup by the selected number of milliseconds. 0 starts on the next vsync edge; higher values delay sync startup."
 msgstr ""
 
 #. Setting label for E-AC-3 Atmos dialogue normalisation defeat

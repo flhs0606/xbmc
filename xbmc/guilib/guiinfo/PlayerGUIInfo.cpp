@@ -230,6 +230,7 @@ std::string HdrTypeToString(StreamHdrType hdrType) {
     case StreamHdrType::HDR_TYPE_HDR10PLUS: return "HDR10+";
     case StreamHdrType::HDR_TYPE_DOLBYVISION: return "Dolby Vision";
     case StreamHdrType::HDR_TYPE_HLG: return "HLG HDR";
+    case StreamHdrType::HDR_TYPE_HDRVIVID: return "HDR Vivid";
   }
   return "";
 }

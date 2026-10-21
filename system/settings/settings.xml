@@ -680,7 +680,6 @@
           <default>2</default> <!-- Align::BOTTOM_OUTSIDE -->
           <constraints>
             <options>
-              <option label="21461">0</option> <!-- Align::MANUAL -->
               <option label="21462">1</option> <!-- Align::BOTTOM_INSIDE -->
               <option label="21463">2</option> <!-- Align::BOTTOM_OUTSIDE -->
               <option label="21464">3</option> <!-- Align::TOP_INSIDE -->
@@ -688,6 +687,46 @@
             </options>
           </constraints>
           <control type="list" format="string" />
+        </setting>
+        <setting id="subtitles.localmovement" type="boolean" label="39202" help="39203">
+          <level>2</level>
+          <default>true</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="subtitles.positionpercentage" parent="subtitles.localmovement" type="integer" label="39204" help="39205">
+          <level>2</level>
+          <default>80</default>
+          <constraints>
+            <minimum>10</minimum>
+            <step>1</step>
+            <maximum>90</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="subtitles.localmovement" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="percentage">
+            <format>{:d} %</format>
+          </control>
+        </setting>
+        <setting id="subtitles.rememberoffset" type="boolean" label="39206" help="39207">
+          <level>2</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="subtitles.subtitleoffset" type="number" parent="subtitles.rememberoffset" label="39208" help="39209">
+          <level>2</level>
+          <default>0.0</default>
+          <constraints>
+            <minimum>-100.0</minimum>
+            <step>0.5</step>
+            <maximum>100.0</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="subtitles.rememberoffset" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="percentage">
+            <format>{:+.1f} %</format>
+          </control>
         </setting>
         <setting id="subtitles.fontname" type="string" label="14089" help="36185">
           <level>1</level>
@@ -4231,7 +4270,7 @@
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>
           <level>2</level>
-          <default>0</default>
+          <default>false</default>
           <dependencies>
             <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>
             <!-- <dependency type="visible" setting="coreelec.amlogic.dolbyvision.video.processor" operator="is">0</dependency> -->
